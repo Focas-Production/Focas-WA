@@ -1,0 +1,32 @@
+# Keep the build context small and keep secrets out of image layers.
+
+node_modules
+.next
+.git
+.github
+.vscode
+.idea
+
+# Secrets — never copy real env files into the image. Values are
+# injected at build (NEXT_PUBLIC_*, via build args) and at runtime
+# (server-only keys, via env_file / -e).
+.env
+.env.*
+!.env.local.example
+!.env.example
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+coverage
+.nyc_output
+.DS_Store
+Thumbs.db
+
+# Not needed to build or run the server.
+supabase
+docs
+*.md
+!README.md

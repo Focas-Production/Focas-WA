@@ -1,0 +1,63 @@
+# ============================================================
+# wacrm — VPS deployment
+#
+# Port 3060 is chosen because your VPS already binds
+# 3000, 3001, 3050, 4200, 5001, 5555, 6379, 7000, 7001, 7005,
+# 7007, 8000 and 27017. The app listens on 3060 *inside* the
+# container too (PORT in the Dockerfile) — nothing uses 3000
+# anywhere. To move it, change both sides of `ports` below and
+# `PORT` in the Dockerfile so they stay in sync.
+#
+# Run with (note --env-file: it drives BOTH the build args and the
+# runtime env from one file):
+#
+#   docker compose --env-file .env.local up -d --build
+#
+# ============================================================
+
+services:
+  wacrm:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # NEXT_PUBLIC_* are inlined into the client bundle at build time,
+      # so they must be passed here, not only at runtime. Edit one and
+      # you must rebuild (`up -d --build`), not just restart.
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+        NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL}
+        NEXT_PUBLIC_APP_LOCALE: ${NEXT_PUBLIC_APP_LOCALE}
+
+    image: wacrm:latest
+    container_name: wacrm
+    restart: unless-stopped
+
+    # Server-only secrets (SUPABASE_SERVICE_ROLE_KEY, ENCRYPTION_KEY,
+    # META_APP_SECRET) are read at runtime — never baked into the image.
+    env_file:
+      - .env.local
+
+    ports:
+      - "3060:3060"
+
+    # `next start` has no dedicated health endpoint; the root route is
+    # enough to prove the server is up and serving.
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3060/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
