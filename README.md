@@ -102,7 +102,18 @@ Open <http://localhost:3000>. You'll be redirected to `/login` (or
 
 ```bash
 git pull
-docker compose up -d --build
+docker compose --env-file .env.local up -d --build
+```
+
+**`--env-file .env.local` is required, not optional.** The compose file
+passes `NEXT_PUBLIC_*` values to the build as `args`, and compose only
+interpolates those from `--env-file` (or the shell) — the `env_file:`
+block applies at *runtime* only. Omit the flag and every
+`NEXT_PUBLIC_*` build arg resolves to an empty string, which fails the
+build at prerender with:
+
+```
+Error: @supabase/ssr: Your project's URL and API key are required to create a Supabase client!
 ```
 
 The rebuild is required — not just a restart — whenever any
@@ -132,8 +143,11 @@ NEXT_PUBLIC_META_APP_ID=your-meta-app-id
 NEXT_PUBLIC_META_ES_CONFIG_ID=your-fb-login-configuration-id
 ```
 
-Then redeploy with the commands above. Leave
-`NEXT_PUBLIC_META_ES_CONFIG_ID` unset until Advanced Access is
+Then redeploy with the commands above — both `NEXT_PUBLIC_META_*`
+values are wired as build args in `docker-compose.yml`, so they are
+only picked up by a `--build` run, never by a restart.
+
+Leave `NEXT_PUBLIC_META_ES_CONFIG_ID` unset until Advanced Access is
 granted — with it set beforehand the button goes live but Meta's popup
 won't offer the coexistence option, which is a dead end for the user.
 

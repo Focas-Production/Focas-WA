@@ -28,6 +28,11 @@ services:
         NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
         NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL}
         NEXT_PUBLIC_APP_LOCALE: ${NEXT_PUBLIC_APP_LOCALE}
+        # Embedded Signup / coexistence. Default to empty so a deploy
+        # that hasn't enabled the feature still builds — the button
+        # renders disabled rather than the build failing on an unset var.
+        NEXT_PUBLIC_META_APP_ID: ${NEXT_PUBLIC_META_APP_ID:-}
+        NEXT_PUBLIC_META_ES_CONFIG_ID: ${NEXT_PUBLIC_META_ES_CONFIG_ID:-}
 
     image: wacrm:latest
     container_name: wacrm
