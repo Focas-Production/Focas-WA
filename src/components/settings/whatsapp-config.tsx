@@ -36,6 +36,24 @@ const MASKED_TOKEN = '••••••••••••••••';
 type ConnectionStatus = 'connected' | 'disconnected' | 'unknown';
 type ResetReason = 'token_corrupted' | 'meta_api_error' | null;
 
+// Minimal typings for the Facebook JS SDK surface Embedded Signup uses.
+interface FbLoginResponse {
+  authResponse?: { code?: string } | null;
+}
+interface FbSdk {
+  init(opts: { appId: string; xfbml: boolean; version: string }): void;
+  login(
+    callback: (response: FbLoginResponse) => void,
+    opts: {
+      config_id: string;
+      response_type: string;
+      override_default_response_type: boolean;
+      extras: Record<string, unknown>;
+    }
+  ): void;
+}
+type FbWindow = Window & { FB?: FbSdk; fbAsyncInit?: () => void };
+
 export function WhatsAppConfig() {
   const t = useTranslations('Settings.whatsapp');
   const supabase = createClient();
@@ -69,6 +87,10 @@ export function WhatsAppConfig() {
   const [verifyToken, setVerifyToken] = useState('');
   const [pin, setPin] = useState('');
   const [tokenEdited, setTokenEdited] = useState(false);
+
+  // Embedded Signup (coexistence) — see handlers further down.
+  const [esConnecting, setEsConnecting] = useState(false);
+  const esSessionRef = useRef<{ phone_number_id?: string; waba_id?: string }>({});
 
   // True once /register has succeeded on Meta's side (timestamp set
   // in the row). When false, the saved config is metadata-only and
@@ -371,6 +393,137 @@ export function WhatsAppConfig() {
     toast.success('Webhook URL copied to clipboard');
   }
 
+  // ── Embedded Signup (coexistence) ─────────────────────────────
+  // Launches Meta's Embedded Signup popup. With featureType
+  // 'whatsapp_business_app_onboarding' the flow offers "use your
+  // existing WhatsApp Business app number" (QR scan) — the number
+  // keeps working in the phone app while joining the Cloud API.
+  // The popup posts WA_EMBEDDED_SIGNUP session-info messages carrying
+  // the onboarded phone_number_id + waba_id; FB.login's callback
+  // yields the OAuth code. Both go to /api/whatsapp/embedded-signup,
+  // which exchanges the code server-side and stores the config.
+  const esAppId = process.env.NEXT_PUBLIC_META_APP_ID;
+  const esConfigId = process.env.NEXT_PUBLIC_META_ES_CONFIG_ID;
+  const esConfigured = Boolean(esAppId && esConfigId);
+
+  useEffect(() => {
+    const listener = (event: MessageEvent) => {
+      if (
+        event.origin !== 'https://www.facebook.com' &&
+        event.origin !== 'https://web.facebook.com'
+      ) {
+        return;
+      }
+      try {
+        const data =
+          typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+        if (data?.type === 'WA_EMBEDDED_SIGNUP' && data?.data) {
+          // FINISH events carry the final ids; CANCEL/ERROR carry the
+          // step reached. Keep whatever ids we've seen — the flow may
+          // emit them before the final event.
+          if (data.data.phone_number_id || data.data.waba_id) {
+            esSessionRef.current = {
+              phone_number_id: data.data.phone_number_id,
+              waba_id: data.data.waba_id,
+            };
+          }
+        }
+      } catch {
+        // Not a JSON message meant for us — ignore.
+      }
+    };
+    window.addEventListener('message', listener);
+    return () => window.removeEventListener('message', listener);
+  }, []);
+
+  function loadFbSdk(): Promise<FbSdk> {
+    return new Promise((resolve, reject) => {
+      const w = window as FbWindow;
+      if (w.FB) return resolve(w.FB);
+      w.fbAsyncInit = () => {
+        w.FB!.init({ appId: esAppId!, xfbml: false, version: 'v21.0' });
+        resolve(w.FB!);
+      };
+      const script = document.createElement('script');
+      script.src = 'https://connect.facebook.net/en_US/sdk.js';
+      script.async = true;
+      script.defer = true;
+      script.onerror = () => reject(new Error('Failed to load the Facebook SDK'));
+      document.body.appendChild(script);
+    });
+  }
+
+  async function handleEmbeddedSignup() {
+    if (!esConfigured) {
+      toast.error(
+        'Set NEXT_PUBLIC_META_APP_ID and NEXT_PUBLIC_META_ES_CONFIG_ID to enable Embedded Signup.'
+      );
+      return;
+    }
+    setEsConnecting(true);
+    esSessionRef.current = {};
+    try {
+      const FB = await loadFbSdk();
+      FB.login(
+        (response) => {
+          const code = response?.authResponse?.code;
+          if (!code) {
+            setEsConnecting(false);
+            toast.error('Signup was cancelled before completing.');
+            return;
+          }
+          const { phone_number_id, waba_id } = esSessionRef.current;
+          if (!phone_number_id || !waba_id) {
+            setEsConnecting(false);
+            toast.error(
+              'Could not read the onboarded number from the signup flow. Please try again.'
+            );
+            return;
+          }
+          void (async () => {
+            try {
+              const res = await fetch('/api/whatsapp/embedded-signup', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ code, phone_number_id, waba_id }),
+              });
+              const json = await res.json();
+              if (!res.ok || json.error) {
+                throw new Error(json.error || 'Failed to complete Embedded Signup');
+              }
+              toast.success('WhatsApp connected via Embedded Signup');
+              setConnectionStatus('connected');
+              if (accountId) {
+                loadedAccountIdRef.current = null;
+                await fetchConfig(accountId);
+                loadedAccountIdRef.current = accountId;
+              }
+            } catch (err) {
+              toast.error(
+                err instanceof Error ? err.message : 'Failed to complete Embedded Signup'
+              );
+            } finally {
+              setEsConnecting(false);
+            }
+          })();
+        },
+        {
+          config_id: esConfigId!,
+          response_type: 'code',
+          override_default_response_type: true,
+          extras: {
+            setup: {},
+            featureType: 'whatsapp_business_app_onboarding',
+            sessionInfoVersion: '3',
+          },
+        }
+      );
+    } catch (err) {
+      setEsConnecting(false);
+      toast.error(err instanceof Error ? err.message : 'Failed to start Embedded Signup');
+    }
+  }
+
   if (loading) {
     return (
       <section className="animate-in fade-in-50 duration-200">
@@ -553,6 +706,54 @@ export function WhatsAppConfig() {
             )}
           </Alert>
         )}
+
+        {/* Embedded Signup (coexistence) */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-foreground">
+              Connect with Embedded Signup (coexistence)
+            </CardTitle>
+            <CardDescription className="text-muted-foreground">
+              Onboard a number through Meta&apos;s guided flow — including a
+              number that stays active in the WhatsApp Business app on your
+              phone (coexistence). You&apos;ll scan a QR code from the app;
+              chats keep working there while the API connects here.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <Button
+              onClick={handleEmbeddedSignup}
+              disabled={esConnecting || !esConfigured}
+              className="bg-primary text-primary-foreground hover:bg-primary/90"
+            >
+              {esConnecting ? (
+                <>
+                  <Loader2 className="size-4 animate-spin" />
+                  Waiting for Meta signup…
+                </>
+              ) : (
+                <>
+                  <Zap className="size-4" />
+                  Launch Embedded Signup
+                </>
+              )}
+            </Button>
+            {!esConfigured && (
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                Requires <code>NEXT_PUBLIC_META_APP_ID</code> and{' '}
+                <code>NEXT_PUBLIC_META_ES_CONFIG_ID</code> (a Facebook Login
+                for Business configuration with WhatsApp Embedded Signup) in
+                the environment, plus <code>META_APP_ID</code> /{' '}
+                <code>META_APP_SECRET</code> on the server. The app also needs
+                Advanced Access for the two WhatsApp permissions.
+              </p>
+            )}
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              Prefer manual setup? Use the credentials form below instead —
+              both paths save into the same configuration.
+            </p>
+          </CardContent>
+        </Card>
 
         {/* API Credentials */}
         <Card>

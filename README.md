@@ -26,6 +26,14 @@ clone or fork it to run your own CRM.
 - **Shared inbox** on the official WhatsApp Business API — multiple
   agents working one number, per-conversation assignment, status, and
   notes.
+- **Guided onboarding with coexistence** _(⏳ pending Meta App Review)_
+  — connect a number through Meta's Embedded Signup (QR scan) instead
+  of pasting credentials, and keep it working in the WhatsApp Business
+  app on a phone while the API runs alongside. Code is shipped but the
+  button stays disabled until Advanced Access is approved and the
+  config id is set — see
+  [Enabling coexistence](#enabling-coexistence-pending-app-review) and
+  [docs/coexistence.md](./docs/coexistence.md).
 - **Contacts + tags + custom fields**, CSV import, deduplication.
 - **Sales pipelines** (Kanban) with deals linked to conversations.
 - **Broadcasts** with Meta-approved templates, delivery + read
@@ -89,6 +97,48 @@ npm run dev
 
 Open <http://localhost:3000>. You'll be redirected to `/login` (or
 `/dashboard` if already signed in).
+
+## Redeploying (Docker)
+
+```bash
+git pull
+docker compose up -d --build
+```
+
+The rebuild is required — not just a restart — whenever any
+`NEXT_PUBLIC_*` variable changes, because Next.js inlines those into
+the client bundle at build time.
+
+## Enabling coexistence (pending App Review)
+
+Coexistence / Embedded Signup is **implemented and merged, but not yet
+live**: it needs `whatsapp_business_messaging` and
+`whatsapp_business_management` at **Advanced Access** on the Meta app,
+which goes through App Review (typically a few days, up to 20). Until
+that is granted, the *Launch Embedded Signup* button in
+**Settings → WhatsApp** renders disabled and nothing else changes.
+
+Once Advanced Access is approved, create a **Facebook Login for
+Business** configuration of type *WhatsApp Embedded Signup*, copy its
+id, and add these to `.env.local`:
+
+```bash
+# Server-side — used to exchange the signup code for a token
+META_APP_ID=your-meta-app-id
+META_APP_SECRET=your-meta-app-secret
+
+# Client-side — this is what enables the button
+NEXT_PUBLIC_META_APP_ID=your-meta-app-id
+NEXT_PUBLIC_META_ES_CONFIG_ID=your-fb-login-configuration-id
+```
+
+Then redeploy with the commands above. Leave
+`NEXT_PUBLIC_META_ES_CONFIG_ID` unset until Advanced Access is
+granted — with it set beforehand the button goes live but Meta's popup
+won't offer the coexistence option, which is a dead end for the user.
+
+Full setup, webhook fields, and troubleshooting:
+[docs/coexistence.md](./docs/coexistence.md).
 
 ## 🚀 Deploy on Hostinger (recommended)
 

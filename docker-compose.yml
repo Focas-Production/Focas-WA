@@ -38,8 +38,32 @@ services:
     env_file:
       - .env.local
 
+    # Public hostname is https://wa.focasedu.online, terminated by the
+    # proxy in front of this container — never by `next start` itself.
+    #
+    # Which binding you want depends on where that proxy lives:
+    #
+    #   - Proxy on the HOST (nginx / OpenLiteSpeed / host-installed
+    #     Caddy): use "127.0.0.1:3060:3060". Loopback-only, so the app
+    #     is unreachable at http://<vps-ip>:3060 and every request has
+    #     to come through TLS.
+    #
+    #   - Proxy in a CONTAINER (the focas-crm-web Caddy container):
+    #     a loopback publish is invisible to it — 127.0.0.1 inside that
+    #     container is its own namespace. Join its network instead
+    #     (see `networks` at the bottom) and proxy to `wacrm:3060`;
+    #     the `ports` entry then becomes optional and can be dropped.
+    #
+    # "3060:3060" below binds 0.0.0.0 — the app is served unencrypted
+    # on the public IP alongside the HTTPS hostname. Narrow it once the
+    # proxy is wired up.
     ports:
       - "3060:3060"
+
+    # Uncomment together with the top-level `networks:` block below to
+    # put this container on the Caddy container's network.
+    # networks:
+    #   - proxy
 
     # `next start` has no dedicated health endpoint; the root route is
     # enough to prove the server is up and serving.
@@ -61,3 +85,16 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+# Only needed when the reverse proxy is itself a container. Find the
+# real network name with:
+#
+#   docker inspect focas-crm-web \
+#     --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}'
+#
+# then put that name in `name:` below. `external: true` means compose
+# attaches to the existing network rather than creating one.
+#
+# networks:
+#   proxy:
+#     external: true
+#     name: <network-from-the-command-above>

@@ -233,6 +233,24 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
         continue
       }
 
+      // Coexistence (WhatsApp Business app + Cloud API on one number):
+      // messages the business sends FROM THE PHONE APP arrive as
+      // `smb_message_echoes` — mirror them into the inbox as agent
+      // messages so the thread shows both sides. The related
+      // `history` / `smb_app_state_sync` sync events (initial chat
+      // history + contact sync from the phone) are acknowledged but
+      // not imported.
+      if (change.field === 'smb_message_echoes') {
+        await handleSmbMessageEchoes(change.value as unknown as SmbEchoValue)
+        continue
+      }
+      if (change.field === 'history' || change.field === 'smb_app_state_sync') {
+        console.log(
+          `[webhook] coexistence '${change.field}' event received — not imported`
+        )
+        continue
+      }
+
       const value = change.value
 
       // Handle status updates
@@ -554,6 +572,131 @@ async function handleReaction(
     )
   if (upsertError) {
     console.error('[webhook] reaction upsert failed:', upsertError.message)
+  }
+}
+
+/**
+ * Coexistence echo shape. Each echo is a message the business sent
+ * from the WhatsApp Business app on the phone; `to` is the customer.
+ */
+interface SmbEchoValue {
+  metadata?: { phone_number_id?: string }
+  message_echoes?: Array<{
+    id: string
+    from?: string
+    to?: string
+    timestamp?: string
+    type?: string
+    text?: { body?: string }
+    image?: { caption?: string }
+    video?: { caption?: string }
+    document?: { caption?: string; filename?: string }
+  }>
+}
+
+/**
+ * Mirror phone-app-sent messages into the inbox as agent messages.
+ *
+ * Media bodies are summarized as text (`[image] caption`) rather than
+ * re-fetched: echo media ids are short-lived and the thread mainly
+ * needs to show WHAT was said from the phone, not re-host the file.
+ * Dedupes on the Meta message id — a message sent via wacrm itself may
+ * also echo back, and must not appear twice.
+ */
+async function handleSmbMessageEchoes(value: SmbEchoValue) {
+  const phoneNumberId = value.metadata?.phone_number_id
+  const echoes = value.message_echoes
+  if (!phoneNumberId || !echoes?.length) return
+
+  const { data: configRows, error: configError } = await supabaseAdmin()
+    .from('whatsapp_config')
+    .select('*')
+    .eq('phone_number_id', phoneNumberId)
+
+  if (configError || !configRows || configRows.length !== 1) {
+    console.error(
+      '[webhook] smb_message_echoes: no unique config for phone_number_id:',
+      phoneNumberId
+    )
+    return
+  }
+  const config = configRows[0]
+
+  for (const echo of echoes) {
+    if (!echo.id || !echo.to) continue
+
+    // Skip echoes of messages we sent ourselves (already stored).
+    const { data: existing } = await supabaseAdmin()
+      .from('messages')
+      .select('id')
+      .eq('message_id', echo.id)
+      .limit(1)
+      .maybeSingle()
+    if (existing) continue
+
+    const customerPhone = normalizePhone(echo.to)
+    const contactOutcome = await findOrCreateContact(
+      config.account_id,
+      config.user_id,
+      customerPhone,
+      customerPhone
+    )
+    if (!contactOutcome) continue
+
+    const convResult = await findOrCreateConversation(
+      config.account_id,
+      config.user_id,
+      contactOutcome.contact.id
+    )
+    if (!convResult) continue
+
+    let contentText: string
+    switch (echo.type) {
+      case 'text':
+        contentText = echo.text?.body || ''
+        break
+      case 'image':
+        contentText = `[image]${echo.image?.caption ? ' ' + echo.image.caption : ''}`
+        break
+      case 'video':
+        contentText = `[video]${echo.video?.caption ? ' ' + echo.video.caption : ''}`
+        break
+      case 'document':
+        contentText = `[document]${
+          echo.document?.filename ? ' ' + echo.document.filename : ''
+        }`
+        break
+      case 'audio':
+        contentText = '[audio]'
+        break
+      default:
+        contentText = `[${echo.type || 'message'}]`
+    }
+    if (!contentText) continue
+
+    const { error: insertError } = await supabaseAdmin()
+      .from('messages')
+      .insert({
+        conversation_id: convResult.conversation.id,
+        sender_type: 'agent',
+        content_type: 'text',
+        content_text: contentText,
+        message_id: echo.id,
+        status: 'sent',
+      })
+    if (insertError) {
+      console.error('[webhook] smb echo insert failed:', insertError)
+      continue
+    }
+
+    await supabaseAdmin()
+      .from('conversations')
+      .update({
+        last_message_text: contentText,
+        last_message_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', convResult.conversation.id)
   }
 }
 
