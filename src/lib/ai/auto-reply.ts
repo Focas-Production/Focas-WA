@@ -9,8 +9,7 @@ import { logAiUsage } from './usage'
 import { latestUserMessage } from './query'
 import { engineSendText } from '@/lib/flows/meta-send'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
-import { sendTypingIndicator } from '@/lib/whatsapp/meta-api'
-import { decrypt } from '@/lib/whatsapp/encryption'
+import { ackInboundWithTyping } from '@/lib/whatsapp/typing-ack'
 
 interface DispatchArgs {
   /** Tenancy key — drives config, contact, and whatsapp_config lookups. */
@@ -115,30 +114,11 @@ export async function dispatchInboundToAiReply(
     // so light "typing…" on the customer's phone (and turn their ticks
     // blue) for the seconds the knowledge retrieval + LLM call take.
     // Placed BEFORE those slow steps: that latency window is the whole
-    // point. Best-effort — a Meta rejection must never cost us the
-    // reply — and awaited (not floating) because we're inside the
-    // webhook's `after()` block, where a detached promise can be frozen
-    // before it delivers.
+    // point. Awaited (not floating) because we're inside the webhook's
+    // `after()` block, where a detached promise can be frozen before it
+    // delivers; the helper itself never throws.
     if (inboundMessageId) {
-      try {
-        const { data: waConfig } = await db
-          .from('whatsapp_config')
-          .select('phone_number_id, access_token')
-          .eq('account_id', accountId)
-          .single()
-        if (waConfig) {
-          await sendTypingIndicator({
-            phoneNumberId: waConfig.phone_number_id,
-            accessToken: decrypt(waConfig.access_token),
-            messageId: inboundMessageId,
-          })
-        }
-      } catch (err) {
-        console.warn(
-          '[ai auto-reply] typing indicator failed (non-fatal):',
-          err instanceof Error ? err.message : err,
-        )
-      }
+      await ackInboundWithTyping(db, { accountId, inboundMessageId })
     }
 
     // Ground the reply in the account's knowledge base (best-effort).

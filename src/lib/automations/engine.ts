@@ -22,6 +22,7 @@ import { supabaseAdmin } from './admin-client'
 import { addContactTagIfAbsent } from '@/lib/contacts/tag-write'
 import { MAX_TAG_CHAIN_DEPTH, getTagChainDepth } from '@/lib/contacts/tag-chain'
 import { engineSendText, engineSendTemplate, engineSendInteractive } from './meta-send'
+import { ackInboundWithTyping } from '@/lib/whatsapp/typing-ack'
 import { validateInteractivePayload } from '@/lib/whatsapp/interactive'
 import { isDeliverableUrl } from '@/lib/webhooks/ssrf'
 
@@ -42,6 +43,12 @@ export interface AutomationContext {
   agent_id?: string
   /** Button / list-row id the customer tapped, for interactive_reply. */
   interactive_reply_id?: string
+  /** Meta wamid of the inbound message that fired a message-level
+   *  trigger. Lets send steps light "typing…" (a read-ack of that
+   *  message) right before replying. Absent for relationship / CRM
+   *  triggers (tag_added, conversation_assigned, …), which have no
+   *  inbound to acknowledge. */
+  inbound_message_id?: string
 }
 
 export interface DispatchInput {
@@ -347,6 +354,25 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
   }
 }
 
+/**
+ * Light "typing…" (read-ack) for the inbound that fired this automation,
+ * once per execution. Only message-level triggers carry the wamid; the
+ * `_typing_acked` var makes chained/nested scopes (branches, tag_added
+ * cascades sharing the context) skip repeat acks. Best-effort — the
+ * shared helper never throws.
+ */
+async function ackTypingOnce(args: ExecuteArgs): Promise<void> {
+  const wamid = args.context.inbound_message_id
+  if (!wamid) return
+  const vars = (args.context.vars ??= {})
+  if (vars._typing_acked) return
+  vars._typing_acked = true
+  await ackInboundWithTyping(supabaseAdmin(), {
+    accountId: args.automation.account_id,
+    inboundMessageId: wamid,
+  })
+}
+
 async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string> {
   const db = supabaseAdmin()
 
@@ -357,6 +383,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       const text = interpolate(cfg.text, args)
       if (!text.trim()) throw new Error('send_message has empty text')
       const conversationId = await resolveConversationId(args)
+      await ackTypingOnce(args)
       const { whatsapp_message_id } = await engineSendText({
         accountId: args.automation.account_id,
         userId: args.automation.user_id,
@@ -377,6 +404,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       const check = validateInteractivePayload(payload)
       if (!check.ok) throw new Error(check.error)
       const conversationId = await resolveConversationId(args)
+      await ackTypingOnce(args)
       const { whatsapp_message_id } = await engineSendInteractive({
         accountId: args.automation.account_id,
         userId: args.automation.user_id,
@@ -392,6 +420,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       if (!args.contactId) throw new Error('send_template needs a contact')
       if (!cfg.template_name) throw new Error('send_template needs template_name')
       const conversationId = await resolveConversationId(args)
+      await ackTypingOnce(args)
       // Meta templates use positional {{1}}, {{2}}, … placeholders, so
       // we MUST emit params in strict numeric order. Lexicographic sort
       // of "1", "2", …, "10" yields "1", "10", "2", … which silently

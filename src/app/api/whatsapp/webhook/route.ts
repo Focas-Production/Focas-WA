@@ -935,6 +935,9 @@ async function processMessage(
         // Only set on interactive taps; drives the interactive_reply
         // trigger's exact-id match.
         interactive_reply_id: interactiveReplyId ?? undefined,
+        // Lets send steps light "typing…" (read-ack of this inbound)
+        // right before their reply goes out.
+        inbound_message_id: message.id,
       },
     }).catch((err) => console.error('[automations] dispatch failed:', err))
   }

@@ -33,6 +33,7 @@
  */
 
 import { supabaseAdmin } from "./admin-client";
+import { ackInboundWithTyping } from "@/lib/whatsapp/typing-ack";
 import {
   engineSendInteractiveButtons,
   engineSendInteractiveList,
@@ -860,6 +861,15 @@ export async function dispatchInboundToFlows(
           outcome: "duplicate_inbound_ignored",
         };
       }
+      // The run WILL consume this message — light "typing…" (and blue
+      // ticks) on the customer's phone before we compute + send the
+      // reply, so the bot feels like a human typing rather than dead
+      // air. Awaited: the ack must reach Meta before the reply send
+      // dismisses it. Best-effort inside — never throws.
+      await ackInboundWithTyping(db, {
+        accountId: input.accountId,
+        inboundMessageId: input.message.meta_message_id,
+      });
       // One SELECT for the whole flow's nodes — advance loop is now
       // in-memory. See loadAllNodes.
       const nodes = await loadAllNodes(db, activeRun.flow_id);
@@ -876,6 +886,12 @@ export async function dispatchInboundToFlows(
     if (!flow || !flow.entry_node_id) {
       return { consumed: false, outcome: "no_match" };
     }
+    // Entry trigger matched → a new run starts and its first node will
+    // reply. Same pre-reply typing ack as the active-run branch above.
+    await ackInboundWithTyping(db, {
+      accountId: input.accountId,
+      inboundMessageId: input.message.meta_message_id,
+    });
     const nodes = await loadAllNodes(db, flow.id);
     return startNewRun(db, flow, input, nodes);
   } catch (err) {
