@@ -30,7 +30,8 @@ export default function NewBroadcastPage() {
   const [currentStep, setCurrentStep] = useState(0);
   const [template, setTemplate] = useState<MessageTemplate | null>(null);
   const [audience, setAudience] = useState<{
-    type: 'all' | 'tags' | 'custom_field' | 'csv';
+    type: 'all' | 'contacts' | 'tags' | 'custom_field' | 'csv';
+    contactIds?: string[];
     tagIds?: string[];
     customField?: {
       fieldId: string;
@@ -55,6 +56,7 @@ export default function NewBroadcastPage() {
         template,
         audience: {
           type: audience.type,
+          contactIds: audience.contactIds,
           tagIds: audience.tagIds,
           customField: audience.customField,
           csvContacts: audience.csvContacts,

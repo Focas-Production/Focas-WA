@@ -9,6 +9,7 @@ import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
+import { refundTemplateCharge } from '@/lib/wallet/wallet'
 import {
   handleTemplateWebhookChange,
   isTemplateWebhookField,
@@ -373,6 +374,15 @@ async function handleStatusUpdate(status: {
   timestamp: string
   recipient_id: string
 }) {
+  // 0) Wallet: a `failed` delivery status reverses the send-time
+  //    charge (charge-on-send, refund-on-failure). The refund is
+  //    keyed by wamid and idempotent, so a replayed webhook can't
+  //    double-refund; messages that were never charged (session
+  //    messages) simply no-op.
+  if (status.status === 'failed') {
+    await refundTemplateCharge(status.id, 'delivery failed')
+  }
+
   // 1) Mirror onto messages (legacy behavior) — Meta's status values
   //    already match the CHECK constraint on messages.status. No
   //    `.select()`: message_id is NOT unique (migration 009 — Meta ids

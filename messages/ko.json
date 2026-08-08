@@ -687,12 +687,20 @@
         "subtitle": "이 브로드캐스트를 받을 대상을 선택하세요.",
         "method": {
           "all": "전체 연락처",
+          "contacts": "연락처 선택",
           "tags": "태그로 필터링",
           "customField": "커스텀 필드",
           "csv": "CSV 업로드"
         },
         "allDesc": "데이터베이스의 전체 연락처 {count}명에게 보냅니다.",
         "allDescLoading": "데이터베이스의 전체 연락처에게 보냅니다.",
+        "contactsDesc": "보낼 연락처를 직접 선택합니다.",
+        "selectContacts": "연락처 선택",
+        "searchContacts": "이름 또는 전화번호로 검색...",
+        "noContactsFound": "연락처를 찾을 수 없습니다.",
+        "selectedCount": "{count}명 선택됨",
+        "selectAllShown": "표시된 {count}명 모두 선택",
+        "clearSelection": "선택 해제",
         "tagDesc": "특정 태그와 일치하는 연락처에 보냅니다.",
         "customFieldDesc": "커스텀 필드 규칙과 일치하는 연락처에 보냅니다.",
         "csvDesc": "전화번호(선택적으로 이름 포함)가 담긴 CSV를 업로드하세요.",
@@ -753,6 +761,10 @@
         "template": "템플릿:",
         "audience": "대상:",
         "audienceAll": "전체 연락처",
+        "estimatedCost": "예상 비용",
+        "walletBalance": "지갑 잔액",
+        "insufficientFunds": "지갑 잔액이 이 브로드캐스트를 감당하지 못할 수 있습니다. 설정 → 지갑에서 충전하세요. 그렇지 않으면 일부 메시지가 실패합니다.",
+        "audienceContacts": "직접 선택한 연락처",
         "audienceTags": "태그로 필터링됨",
         "audienceField": "커스텀 필드로 필터링됨",
         "audienceCsv": "CSV 업로드",
@@ -1574,6 +1586,59 @@
     "security": {
       "title": "로그인 & 보안",
       "description": "비밀번호를 변경하고 기기에서 로그아웃하세요. 계정을 안전하게 유지하는 데 도움이 됩니다."
+    },
+    "wallet": {
+      "title": "지갑",
+      "subtitle": "템플릿 메시지용 선불 잔액입니다. 템플릿 발송마다 Meta 카테고리별 요금이 차감되며, 실패한 발송은 자동으로 환불됩니다.",
+      "refresh": "새로고침",
+      "balance": {
+        "label": "사용 가능 잔액",
+        "lowWarning": "잔액이 {threshold} 미만입니다. 브로드캐스트 실패를 막으려면 충전하세요."
+      },
+      "topup": {
+        "title": "충전하기",
+        "desc": "Razorpay로 온라인 결제 — 결제 후 즉시 잔액이 충전됩니다.",
+        "payButton": "Razorpay로 결제",
+        "minAmount": "최소 충전 금액은 ₹100입니다.",
+        "success": "지갑이 충전되었습니다!",
+        "notConfigured": "이 서버에는 Razorpay가 설정되어 있지 않습니다 (RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET 설정 필요). 소유자는 수동 크레딧으로 잔액을 추가할 수 있습니다."
+      },
+      "manual": {
+        "button": "수동 크레딧",
+        "title": "수동 크레딧",
+        "desc": "게이트웨이 외부에서 받은 금액(계좌 이체, 현금)을 기록합니다. 소유자 전용.",
+        "amount": "금액 (₹)",
+        "note": "메모",
+        "notePlaceholder": "예: NEFT 참조번호 12345",
+        "cancel": "취소",
+        "confirm": "지갑에 충전",
+        "invalidAmount": "올바른 금액을 입력하세요.",
+        "success": "지갑에 충전되었습니다."
+      },
+      "pricing": {
+        "title": "메시지당 요금",
+        "desc": "Meta 카테고리별 템플릿 메시지 1건당 차감되는 금액입니다. Meta의 실제 인도 요율이며 수정할 수 없습니다 — 지갑은 실제 Meta 지출을 그대로 반영합니다.",
+        "marketing": "마케팅",
+        "utility": "유틸리티",
+        "authentication": "인증",
+        "perMessage": "건당"
+      },
+      "history": {
+        "title": "거래 내역",
+        "empty": "아직 거래가 없습니다. 템플릿 발송과 충전 내역이 여기에 표시됩니다.",
+        "loadError": "거래 내역을 불러오지 못했습니다",
+        "loadMore": "더 보기",
+        "colDate": "날짜",
+        "colDescription": "설명",
+        "colAmount": "금액",
+        "colBalance": "잔액",
+        "filter": {
+          "all": "전체",
+          "credit": "충전",
+          "debit": "차감",
+          "refund": "환불"
+        }
+      }
     },
     "apiKeys": {
       "title": "API 키",

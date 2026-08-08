@@ -44,6 +44,13 @@ import {
 } from '@/lib/whatsapp/phone-utils';
 import type { MessageTemplate } from '@/types';
 import { isMessageTemplate } from '@/lib/whatsapp/template-row-guard';
+import {
+  getTemplateCharge,
+  chargeTemplateSend,
+  stampChargeReference,
+  refundTemplateCharge,
+  WalletError,
+} from '@/lib/wallet/wallet';
 
 export const MEDIA_KINDS = ['image', 'video', 'document', 'audio'] as const;
 export const VALID_MESSAGE_TYPES = [
@@ -395,6 +402,34 @@ export async function sendMessageToConversation(
     return result.messageId;
   };
 
+  // Template sends debit the prepaid wallet (charge-on-send). The
+  // debit happens BEFORE the Meta call — the atomic RPC is what
+  // stops concurrent sends overdrawing — and is refunded below if
+  // Meta rejects every variant. Free-form/session messages are free.
+  let walletChargeRef: string | null = null;
+  if (messageType === 'template' && templateName) {
+    const { category, pricePaise } = await getTemplateCharge(
+      accountId,
+      templateName,
+      templateLanguage || 'en_US'
+    );
+    walletChargeRef = `prep:${crypto.randomUUID()}`;
+    try {
+      await chargeTemplateSend({
+        accountId,
+        reference: walletChargeRef,
+        category,
+        pricePaise,
+        description: `Template "${templateName}" to ${sanitizedPhone}`,
+      });
+    } catch (err) {
+      if (err instanceof WalletError && err.code === 'insufficient_balance') {
+        throw new SendMessageError('insufficient_wallet_balance', err.message, 402);
+      }
+      throw err;
+    }
+  }
+
   // Send via Meta — retry across phone-number variants if Meta rejects
   // with "recipient not in allowed list"; persist a working variant
   // back to the contact so the next send goes straight through.
@@ -424,10 +459,19 @@ export async function sendMessageToConversation(
 
     if (lastError) throw lastError;
   } catch (err) {
+    if (walletChargeRef) {
+      await refundTemplateCharge(walletChargeRef, 'Meta send failed');
+    }
     const message =
       err instanceof Error ? err.message : 'Unknown Meta API error';
     console.error('[send-message] Meta send failed for all variants:', message);
     throw new SendMessageError('meta_error', `Meta API error: ${message}`, 502);
+  }
+
+  // Re-key the debit onto the wamid so a later `failed` delivery
+  // status from the webhook can auto-refund it.
+  if (walletChargeRef && waMessageId) {
+    await stampChargeReference(walletChargeRef, waMessageId);
   }
 
   if (workingPhone !== sanitizedPhone) {

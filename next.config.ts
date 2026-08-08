@@ -33,7 +33,10 @@ const SECURITY_HEADERS = [
     // else stays denied — a compromised dependency can't silently grab
     // the camera / geolocation / etc.
     key: "Permissions-Policy",
-    value: "camera=(), microphone=(self), geolocation=(), payment=(), usb=()",
+    // payment: Razorpay Checkout (wallet top-up) may use the Payment
+    // Request API from its own iframe.
+    value:
+      'camera=(), microphone=(self), geolocation=(), payment=(self "https://checkout.razorpay.com" "https://api.razorpay.com"), usb=()',
   },
   {
     key: "Content-Security-Policy-Report-Only",
@@ -44,7 +47,9 @@ const SECURITY_HEADERS = [
       // Nonce-based CSP is a later project. connect.facebook.net is
       // the Facebook JS SDK used by WhatsApp Embedded Signup
       // (Settings → WhatsApp → coexistence onboarding).
-      "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://connect.facebook.net",
+      // checkout.razorpay.com is the Razorpay Checkout script used by
+      // the wallet top-up flow (Settings → Wallet).
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://connect.facebook.net https://checkout.razorpay.com",
       // Tailwind + inline style attributes on lots of components.
       "style-src 'self' 'unsafe-inline'",
       // Supabase public-bucket avatars, contact avatars (arbitrary
@@ -59,9 +64,11 @@ const SECURITY_HEADERS = [
       // server-side, so graph.facebook.com does not belong here.
       // facebook.com endpoints are used by the FB JS SDK during
       // Embedded Signup (login popup + status pings).
-      "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://www.facebook.com https://graph.facebook.com",
+      // api/checkout/lumberjack.razorpay.com: telemetry + order calls
+      // made by the Razorpay Checkout script during wallet top-up.
+      "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://www.facebook.com https://graph.facebook.com https://api.razorpay.com https://checkout.razorpay.com https://lumberjack.razorpay.com",
       // The FB SDK renders hidden iframes for its login plumbing.
-      "frame-src 'self' https://www.facebook.com https://web.facebook.com",
+      "frame-src 'self' https://www.facebook.com https://web.facebook.com https://api.razorpay.com https://checkout.razorpay.com",
       "frame-ancestors 'none'",
       "base-uri 'self'",
       "form-action 'self'",

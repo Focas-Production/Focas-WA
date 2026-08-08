@@ -1,22 +1,24 @@
 'use client';
 
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import { CustomField, Tag } from '@/types';
+import { Contact, CustomField, Tag } from '@/types';
 import { Button } from '@/components/ui/button';
 import {
   Users,
+  UserCheck,
   Tags,
   Filter,
   Upload,
   Loader2,
   ArrowRight,
   ArrowLeft,
+  Search,
   X,
 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
-type AudienceType = 'all' | 'tags' | 'custom_field' | 'csv';
+type AudienceType = 'all' | 'contacts' | 'tags' | 'custom_field' | 'csv';
 type CustomFieldOperator = 'is' | 'is_not' | 'contains';
 
 interface CustomFieldFilter {
@@ -27,10 +29,83 @@ interface CustomFieldFilter {
 
 interface AudienceConfig {
   type: AudienceType;
+  contactIds?: string[];
   tagIds?: string[];
   customField?: CustomFieldFilter;
   csvContacts?: { phone: string; name?: string }[];
   excludeTagIds?: string[];
+}
+
+/**
+ * Minimal CSV parser for the audience upload. Handles quoted fields
+ * ("a,b"), CRLF, and both comma and semicolon delimiters. Returns rows
+ * of raw string cells — header interpretation happens in the caller.
+ */
+function parseCsv(text: string): string[][] {
+  const delimiter = (() => {
+    const firstLine = text.slice(0, text.indexOf('\n') + 1 || text.length);
+    return (firstLine.match(/;/g)?.length ?? 0) >
+      (firstLine.match(/,/g)?.length ?? 0)
+      ? ';'
+      : ',';
+  })();
+
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') {
+          cell += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        cell += ch;
+      }
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === delimiter) {
+      row.push(cell);
+      cell = '';
+    } else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && text[i + 1] === '\n') i++;
+      row.push(cell);
+      cell = '';
+      if (row.some((c) => c.trim() !== '')) rows.push(row);
+      row = [];
+    } else {
+      cell += ch;
+    }
+  }
+  row.push(cell);
+  if (row.some((c) => c.trim() !== '')) rows.push(row);
+  return rows;
+}
+
+const PHONE_HEADER_ALIASES = [
+  'phone',
+  'phone number',
+  'phone_number',
+  'mobile',
+  'number',
+  'whatsapp',
+];
+const NAME_HEADER_ALIASES = ['name', 'full name', 'full_name', 'contact name'];
+
+/** Keeps leading +, strips spaces/dashes/parens; '' if not phone-like. */
+function normalizeCsvPhone(raw: string): string {
+  const cleaned = raw.trim().replace(/[\s().-]/g, '');
+  const normalized = cleaned.startsWith('+')
+    ? '+' + cleaned.slice(1).replace(/\D/g, '')
+    : cleaned.replace(/\D/g, '');
+  const digits = normalized.replace(/\D/g, '');
+  return digits.length >= 7 && digits.length <= 15 ? normalized : '';
 }
 
 interface Step2Props {
@@ -67,6 +142,12 @@ export function Step2SelectAudience({
       icon: Users,
     },
     {
+      type: 'contacts',
+      label: t('selectAudience.method.contacts'),
+      description: t('selectAudience.contactsDesc'),
+      icon: UserCheck,
+    },
+    {
       type: 'tags',
       label: t('selectAudience.method.tags'),
       description: t('selectAudience.tagDesc'),
@@ -91,6 +172,21 @@ export function Step2SelectAudience({
   const [loadingFields, setLoadingFields] = useState(false);
   const [estimatedCount, setEstimatedCount] = useState<number | null>(null);
   const [loadingCount, setLoadingCount] = useState(false);
+
+  // "Select Contacts" picker state
+  const [contactSearch, setContactSearch] = useState('');
+  const [contactResults, setContactResults] = useState<Contact[]>([]);
+  const [loadingContacts, setLoadingContacts] = useState(false);
+  // Details of already-selected contacts so their chips stay labeled
+  // even when the search results no longer include them.
+  const [selectedContacts, setSelectedContacts] = useState<
+    Map<string, Contact>
+  >(new Map());
+
+  // CSV upload state
+  const [csvFileName, setCsvFileName] = useState<string | null>(null);
+  const [csvError, setCsvError] = useState<string | null>(null);
+  const csvInputRef = useRef<HTMLInputElement>(null);
 
   // Tags are used both by the primary "Filter by Tags" audience type
   // AND by the exclude-list below — so always load once on mount.
@@ -127,6 +223,58 @@ export function Step2SelectAudience({
     fetchFields();
   }, [audience.type]);
 
+  // Contact picker — load on activation, re-query on search (debounced).
+  useEffect(() => {
+    if (audience.type !== 'contacts') return;
+    const handle = setTimeout(async () => {
+      setLoadingContacts(true);
+      try {
+        const supabase = createClient();
+        let q = supabase
+          .from('contacts')
+          .select('*')
+          .order('name', { ascending: true, nullsFirst: false })
+          .limit(50);
+        const term = contactSearch.trim();
+        if (term) {
+          // Escape PostgREST or-filter specials, then match name/phone.
+          const safe = term.replace(/[,()%]/g, ' ').trim();
+          if (safe) q = q.or(`name.ilike.%${safe}%,phone.ilike.%${safe}%`);
+        }
+        const { data } = await q;
+        setContactResults(data ?? []);
+      } finally {
+        setLoadingContacts(false);
+      }
+    }, 300);
+    return () => clearTimeout(handle);
+  }, [audience.type, contactSearch]);
+
+  // Hydrate labels for contact IDs selected in a previous visit to this
+  // step (state survives Back/Next but this component remounts).
+  useEffect(() => {
+    if (audience.type !== 'contacts') return;
+    const ids = audience.contactIds ?? [];
+    const missing = ids.filter((id) => !selectedContacts.has(id));
+    if (missing.length === 0) return;
+    (async () => {
+      const supabase = createClient();
+      const { data } = await supabase
+        .from('contacts')
+        .select('*')
+        .in('id', missing);
+      if (data && data.length > 0) {
+        setSelectedContacts((prev) => {
+          const next = new Map(prev);
+          for (const c of data as Contact[]) next.set(c.id, c);
+          return next;
+        });
+      }
+    })();
+    // selectedContacts intentionally omitted — running on ids change is enough.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [audience.type, audience.contactIds]);
+
   const fetchEstimatedCount = useCallback(async () => {
     setLoadingCount(true);
     try {
@@ -137,6 +285,12 @@ export function Step2SelectAudience({
 
       if (audience.type === 'all') {
         // Handled below — full-table count adjusted by excludes.
+      } else if (
+        audience.type === 'contacts' &&
+        audience.contactIds &&
+        audience.contactIds.length > 0
+      ) {
+        baseIds = new Set(audience.contactIds);
       } else if (
         audience.type === 'tags' &&
         audience.tagIds &&
@@ -203,6 +357,7 @@ export function Step2SelectAudience({
     }
   }, [
     audience.type,
+    audience.contactIds,
     audience.tagIds,
     audience.customField,
     audience.csvContacts,
@@ -212,6 +367,96 @@ export function Step2SelectAudience({
   useEffect(() => {
     fetchEstimatedCount();
   }, [fetchEstimatedCount]);
+
+  function toggleContact(contact: Contact) {
+    const current = audience.contactIds ?? [];
+    const isSelected = current.includes(contact.id);
+    const updated = isSelected
+      ? current.filter((id) => id !== contact.id)
+      : [...current, contact.id];
+    setSelectedContacts((prev) => {
+      const next = new Map(prev);
+      if (isSelected) next.delete(contact.id);
+      else next.set(contact.id, contact);
+      return next;
+    });
+    onUpdate({ ...audience, contactIds: updated });
+  }
+
+  function selectAllResults() {
+    const current = new Set(audience.contactIds ?? []);
+    setSelectedContacts((prev) => {
+      const next = new Map(prev);
+      for (const c of contactResults) next.set(c.id, c);
+      return next;
+    });
+    for (const c of contactResults) current.add(c.id);
+    onUpdate({ ...audience, contactIds: [...current] });
+  }
+
+  function clearContactSelection() {
+    setSelectedContacts(new Map());
+    onUpdate({ ...audience, contactIds: [] });
+  }
+
+  function handleCsvFile(file: File) {
+    setCsvError(null);
+    setCsvFileName(file.name);
+    const reader = new FileReader();
+    reader.onerror = () => setCsvError(t('selectAudience.errorCsvParse'));
+    reader.onload = () => {
+      try {
+        const text = String(reader.result ?? '');
+        const rows = parseCsv(text);
+        if (rows.length === 0) {
+          setCsvError(t('selectAudience.errorCsvParse'));
+          return;
+        }
+
+        const header = rows[0].map((h) => h.trim().toLowerCase());
+        let phoneCol = header.findIndex((h) =>
+          PHONE_HEADER_ALIASES.includes(h),
+        );
+        let nameCol = header.findIndex((h) => NAME_HEADER_ALIASES.includes(h));
+        let dataRows = rows.slice(1);
+
+        // Headerless file: if the first cell of the first row already
+        // parses as a phone number, treat every row as data.
+        if (phoneCol === -1 && normalizeCsvPhone(rows[0][0] ?? '')) {
+          phoneCol = 0;
+          nameCol = rows[0].length > 1 ? 1 : -1;
+          dataRows = rows;
+        }
+
+        if (phoneCol === -1) {
+          setCsvError(t('selectAudience.errorCsvMissingPhone'));
+          onUpdate({ ...audience, csvContacts: undefined });
+          return;
+        }
+
+        const seen = new Set<string>();
+        const contacts: { phone: string; name?: string }[] = [];
+        for (const row of dataRows) {
+          const phone = normalizeCsvPhone(row[phoneCol] ?? '');
+          if (!phone || seen.has(phone)) continue;
+          seen.add(phone);
+          const name =
+            nameCol >= 0 ? row[nameCol]?.trim() || undefined : undefined;
+          contacts.push({ phone, name });
+        }
+
+        if (contacts.length === 0) {
+          setCsvError(t('selectAudience.errorCsvParse'));
+          onUpdate({ ...audience, csvContacts: undefined });
+          return;
+        }
+        onUpdate({ ...audience, csvContacts: contacts });
+      } catch {
+        setCsvError(t('selectAudience.errorCsvParse'));
+      }
+    };
+    reader.readAsText(file);
+  }
 
   function toggleTag(tagId: string) {
     const current = audience.tagIds ?? [];
@@ -240,6 +485,9 @@ export function Step2SelectAudience({
 
   const isValid =
     audience.type === 'all' ||
+    (audience.type === 'contacts' &&
+      audience.contactIds &&
+      audience.contactIds.length > 0) ||
     (audience.type === 'tags' && audience.tagIds && audience.tagIds.length > 0) ||
     (audience.type === 'custom_field' &&
       !!audience.customField?.fieldId &&
@@ -270,6 +518,8 @@ export function Step2SelectAudience({
                   type: option.type,
                   // Wipe shape fields from other types to avoid stale
                   // config leaking across selections.
+                  contactIds:
+                    option.type === 'contacts' ? audience.contactIds : undefined,
                   tagIds: option.type === 'tags' ? audience.tagIds : undefined,
                   customField:
                     option.type === 'custom_field'
@@ -304,6 +554,175 @@ export function Step2SelectAudience({
           );
         })}
       </div>
+
+      {audience.type === 'contacts' && (
+        <div className="rounded-xl border border-border bg-card/50 p-4">
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <p className="text-sm font-medium text-foreground">
+              {t('selectAudience.selectContacts')}
+            </p>
+            <span className="text-xs text-muted-foreground">
+              {t('selectAudience.selectedCount', {
+                count: audience.contactIds?.length ?? 0,
+              })}
+            </span>
+          </div>
+
+          <div className="relative mb-3">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <input
+              type="text"
+              value={contactSearch}
+              onChange={(e) => setContactSearch(e.target.value)}
+              placeholder={t('selectAudience.searchContacts')}
+              className="h-9 w-full rounded-lg border border-border bg-muted pl-8 pr-2.5 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-primary focus:ring-1 focus:ring-primary"
+            />
+          </div>
+
+          {/* Selected chips (kept visible across searches) */}
+          {(audience.contactIds?.length ?? 0) > 0 && (
+            <div className="mb-3 flex flex-wrap items-center gap-1.5">
+              {(audience.contactIds ?? []).map((id) => {
+                const c = selectedContacts.get(id);
+                return (
+                  <button
+                    key={id}
+                    onClick={() => {
+                      const contact = selectedContacts.get(id);
+                      if (contact) toggleContact(contact);
+                      else
+                        onUpdate({
+                          ...audience,
+                          contactIds: (audience.contactIds ?? []).filter(
+                            (x) => x !== id,
+                          ),
+                        });
+                    }}
+                    className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-0.5 text-xs text-primary"
+                    title={c?.phone ?? ''}
+                  >
+                    {c?.name || c?.phone || '…'}
+                    <X className="h-3 w-3" />
+                  </button>
+                );
+              })}
+              <button
+                onClick={clearContactSelection}
+                className="text-xs text-muted-foreground underline-offset-2 hover:underline"
+              >
+                {t('selectAudience.clearSelection')}
+              </button>
+            </div>
+          )}
+
+          {loadingContacts ? (
+            <Loader2 className="h-5 w-5 animate-spin text-primary" />
+          ) : contactResults.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              {t('selectAudience.noContactsFound')}
+            </p>
+          ) : (
+            <>
+              <div className="mb-2">
+                <button
+                  onClick={selectAllResults}
+                  className="text-xs font-medium text-primary underline-offset-2 hover:underline"
+                >
+                  {t('selectAudience.selectAllShown', {
+                    count: contactResults.length,
+                  })}
+                </button>
+              </div>
+              <div className="max-h-64 space-y-1 overflow-y-auto pr-1">
+                {contactResults.map((contact) => {
+                  const isSelected = audience.contactIds?.includes(contact.id);
+                  return (
+                    <button
+                      key={contact.id}
+                      onClick={() => toggleContact(contact)}
+                      className={`flex w-full items-center gap-3 rounded-lg border px-3 py-2 text-left transition-all ${
+                        isSelected
+                          ? 'border-primary/30 bg-primary/10'
+                          : 'border-transparent hover:bg-muted'
+                      }`}
+                    >
+                      <span
+                        className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border text-[10px] ${
+                          isSelected
+                            ? 'border-primary bg-primary text-primary-foreground'
+                            : 'border-border bg-muted'
+                        }`}
+                      >
+                        {isSelected ? '✓' : ''}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm text-foreground">
+                          {contact.name || contact.phone}
+                        </span>
+                        {contact.name && (
+                          <span className="block truncate text-xs text-muted-foreground">
+                            {contact.phone}
+                          </span>
+                        )}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {audience.type === 'csv' && (
+        <div className="rounded-xl border border-border bg-card/50 p-4">
+          <p className="mb-1 text-sm font-medium text-foreground">
+            {t('selectAudience.uploadCsv')}
+          </p>
+          <p className="mb-3 text-xs text-muted-foreground">
+            {t('selectAudience.csvFormatDesc')}
+          </p>
+
+          <input
+            ref={csvInputRef}
+            type="file"
+            accept=".csv,text/csv"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) handleCsvFile(file);
+              // Allow re-selecting the same file after a fix.
+              e.target.value = '';
+            }}
+          />
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              variant="outline"
+              onClick={() => csvInputRef.current?.click()}
+              className="border-border text-foreground"
+            >
+              <Upload className="h-4 w-4" />
+              {t('selectAudience.uploadCsv')}
+            </Button>
+            {csvFileName && (
+              <span className="text-xs text-muted-foreground">{csvFileName}</span>
+            )}
+          </div>
+
+          {csvError && (
+            <p className="mt-3 text-xs text-red-400">{csvError}</p>
+          )}
+          {!csvError &&
+            audience.csvContacts &&
+            audience.csvContacts.length > 0 && (
+              <p className="mt-3 text-xs text-primary">
+                {t('selectAudience.csvContactsFound', {
+                  count: audience.csvContacts.length,
+                })}
+              </p>
+            )}
+        </div>
+      )}
 
       {audience.type === 'tags' && (
         <div className="rounded-xl border border-border bg-card/50 p-4">

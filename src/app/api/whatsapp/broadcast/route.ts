@@ -15,6 +15,13 @@ import {
   rateLimitResponse,
   RATE_LIMITS,
 } from '@/lib/rate-limit'
+import {
+  getTemplateCharge,
+  chargeTemplateSend,
+  stampChargeReference,
+  refundTemplateCharge,
+  WalletError,
+} from '@/lib/wallet/wallet'
 
 interface BroadcastResult {
   phone: string
@@ -175,9 +182,21 @@ export async function POST(request: Request) {
     }
     const templateRow = rawTemplateRow ?? null
 
+    // Wallet: template sends are prepaid. Resolve the per-message
+    // price once; each recipient is atomically debited before its
+    // Meta call and refunded if the send fails. When the wallet runs
+    // dry mid-batch, the remaining recipients fail fast with a clear
+    // message instead of hammering the charge RPC.
+    const { category: chargeCategory, pricePaise } = await getTemplateCharge(
+      accountId,
+      template_name,
+      template_language || 'en_US'
+    )
+
     const results: BroadcastResult[] = []
     let sentCount = 0
     let failedCount = 0
+    let walletExhausted = false
 
     for (const recipient of recipients) {
       const sanitized = sanitizePhoneForMeta(recipient.phone)
@@ -190,6 +209,40 @@ export async function POST(request: Request) {
         })
         failedCount++
         continue
+      }
+
+      if (walletExhausted) {
+        results.push({
+          phone: recipient.phone,
+          status: 'failed',
+          error: 'Insufficient wallet balance',
+        })
+        failedCount++
+        continue
+      }
+
+      const chargeRef = `prep:${crypto.randomUUID()}`
+      try {
+        await chargeTemplateSend({
+          accountId,
+          reference: chargeRef,
+          category: chargeCategory,
+          pricePaise,
+          description: `Template "${template_name}" to ${sanitized}`,
+          createdBy: user.id,
+        })
+      } catch (err) {
+        if (err instanceof WalletError && err.code === 'insufficient_balance') {
+          walletExhausted = true
+          results.push({
+            phone: recipient.phone,
+            status: 'failed',
+            error: 'Insufficient wallet balance',
+          })
+          failedCount++
+          continue
+        }
+        throw err
       }
 
       // Retry with phone variants on "not in allowed list" so numbers
@@ -226,6 +279,7 @@ export async function POST(request: Request) {
       }
 
       if (sentMessageId) {
+        await stampChargeReference(chargeRef, sentMessageId)
         results.push({
           phone: recipient.phone,
           status: 'sent',
@@ -233,6 +287,7 @@ export async function POST(request: Request) {
         })
         sentCount++
       } else {
+        await refundTemplateCharge(chargeRef, 'Meta send failed')
         console.error(
           `Failed to send broadcast to ${recipient.phone}:`,
           lastError

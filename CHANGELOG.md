@@ -9,6 +9,46 @@ Versions follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Pre-1.0, `MINOR` bumps cover new modules; `PATCH` bumps cover bug fixes
 and polish.
 
+## [0.9.0] — 2026-08-08
+
+Prepaid wallet for template messages, plus broadcast-audience fixes.
+
+> **Migration required:** apply `supabase/migrations/037_wallet.sql`
+> (wallet + ledger + pricing + top-up tables and the service-role-only
+> charge/credit functions). Optional: set `RAZORPAY_KEY_ID` /
+> `RAZORPAY_KEY_SECRET` to enable online top-ups — without them the
+> owner can still load balance via manual credit.
+
+### Added
+
+- **Wallet (Settings → Wallet).** Template sends are now billed from a
+  prepaid, account-scoped wallet — WATI-style. Every template message
+  (dashboard send, broadcast, automation, public API) is debited at
+  Meta's actual per-category rate (marketing ₹0.7846 / utility ₹0.1150
+  / authentication ₹0.1150, India rate card effective 2025-07-01 —
+  fixed in code, not configurable, so the balance mirrors real Meta
+  spend); sends Meta rejects, or later reports `failed`, are refunded
+  automatically. Balance can never go negative — a dry wallet fails
+  the remaining sends with a clear "Insufficient wallet balance"
+  instead of overdrawing.
+- **Top-ups.** Online via Razorpay Checkout (signature-verified,
+  double-credit-proof), plus an owner-only manual credit for money
+  received off-gateway. Full transaction history with running balance,
+  type filters, and pagination.
+- **Broadcast cost preview.** The review step shows the campaign's
+  estimated cost and current wallet balance, and warns when the
+  balance won't cover the send.
+- **"Select Contacts" audience.** Broadcasts can now target hand-picked
+  individual contacts (search by name/phone, checkboxes, select-all,
+  removable chips) alongside All/Tags/Custom-field/CSV.
+
+### Fixed
+
+- **CSV audience upload did nothing.** The Upload CSV card had no file
+  picker behind it. It now parses quoted fields, comma/semicolon
+  delimiters, header aliases (`phone`, `mobile`, `whatsapp`…), and
+  headerless phone-number lists, with de-duplication and clear errors.
+
 ## [0.8.1] — 2026-07-10
 
 Fixes inbound chats fragmenting into multiple threads for the same

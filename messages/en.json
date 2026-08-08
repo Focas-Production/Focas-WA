@@ -688,12 +688,20 @@
         "subtitle": "Choose who will receive this broadcast.",
         "method": {
           "all": "All Contacts",
+          "contacts": "Select Contacts",
           "tags": "Filter by Tags",
           "customField": "Custom Field",
           "csv": "Upload CSV"
         },
         "allDesc": "Send to all {count} contacts in your database.",
         "allDescLoading": "Send to all contacts in your database.",
+        "contactsDesc": "Hand-pick individual contacts to send to.",
+        "selectContacts": "Select Contacts",
+        "searchContacts": "Search by name or phone...",
+        "noContactsFound": "No contacts found.",
+        "selectedCount": "{count} selected",
+        "selectAllShown": "Select all {count} shown",
+        "clearSelection": "Clear selection",
         "tagDesc": "Send to contacts matching specific tags.",
         "customFieldDesc": "Send to contacts matching a custom field rule.",
         "csvDesc": "Upload a CSV with phone numbers (and optional names).",
@@ -753,7 +761,11 @@
         "summary": "Summary",
         "template": "Template:",
         "audience": "Audience:",
+        "estimatedCost": "Estimated cost",
+        "walletBalance": "Wallet balance",
+        "insufficientFunds": "Your wallet balance may not cover this broadcast. Top up in Settings → Wallet, or some messages will fail.",
         "audienceAll": "All contacts",
+        "audienceContacts": "Hand-picked contacts",
         "audienceTags": "Filtered by tags",
         "audienceField": "Filtered by custom field",
         "audienceCsv": "CSV upload",
@@ -1576,6 +1588,59 @@
     "security": {
       "title": "Login & security",
       "description": "Change your password and sign out of your devices. These keep your account safe."
+    },
+    "wallet": {
+      "title": "Wallet",
+      "subtitle": "Prepaid balance for template messages. Each template send is charged per Meta category; failed sends are refunded automatically.",
+      "refresh": "Refresh",
+      "balance": {
+        "label": "Available balance",
+        "lowWarning": "Balance is below {threshold}. Top up to avoid failed broadcasts."
+      },
+      "topup": {
+        "title": "Add money",
+        "desc": "Pay online via Razorpay — the balance is credited instantly after payment.",
+        "payButton": "Pay with Razorpay",
+        "minAmount": "Minimum top-up is ₹100.",
+        "success": "Wallet topped up successfully!",
+        "notConfigured": "Razorpay is not configured on this server (set RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET). Owners can still load balance with manual credit."
+      },
+      "manual": {
+        "button": "Manual credit",
+        "title": "Manual credit",
+        "desc": "Record money received outside the gateway (bank transfer, cash). Owner only.",
+        "amount": "Amount (₹)",
+        "note": "Note",
+        "notePlaceholder": "e.g. NEFT ref 12345",
+        "cancel": "Cancel",
+        "confirm": "Credit wallet",
+        "invalidAmount": "Enter a valid amount.",
+        "success": "Wallet credited."
+      },
+      "pricing": {
+        "title": "Per-message rates",
+        "desc": "What one template message deducts from the wallet, by Meta category. These are Meta's actual India rates and are not editable — the wallet mirrors your real Meta spend.",
+        "marketing": "Marketing",
+        "utility": "Utility",
+        "authentication": "Authentication",
+        "perMessage": "per message"
+      },
+      "history": {
+        "title": "Transaction history",
+        "empty": "No transactions yet. Template sends and top-ups will appear here.",
+        "loadError": "Failed to load transactions",
+        "loadMore": "Load more",
+        "colDate": "Date",
+        "colDescription": "Description",
+        "colAmount": "Amount",
+        "colBalance": "Balance",
+        "filter": {
+          "all": "All",
+          "credit": "Credits",
+          "debit": "Debits",
+          "refund": "Refunds"
+        }
+      }
     },
     "apiKeys": {
       "title": "API keys",

@@ -14,11 +14,12 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog';
-import { ArrowLeft, Send, Loader2, Users, Save } from 'lucide-react';
+import { ArrowLeft, Send, Loader2, Users, Save, Wallet, AlertTriangle } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
 interface AudienceConfig {
   type: string;
+  contactIds?: string[];
   tagIds?: string[];
   csvContacts?: { phone: string; name?: string }[];
 }
@@ -50,6 +51,44 @@ export function Step4ScheduleSend({
   const [showConfirm, setShowConfirm] = useState(false);
   const [estimatedReach, setEstimatedReach] = useState<number>(0);
   const [loadingReach, setLoadingReach] = useState(true);
+  const [walletBalancePaise, setWalletBalancePaise] = useState<number | null>(null);
+  const [pricePaise, setPricePaise] = useState<number | null>(null);
+
+  // Wallet balance + this template's per-message rate, so the user
+  // sees the campaign cost before confirming.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/wallet');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        setWalletBalancePaise(Number(data.balance_paise ?? 0));
+        const category = (template.category ?? 'Marketing').toLowerCase();
+        const price =
+          data.pricing?.[category] ?? data.pricing?.marketing ?? null;
+        setPricePaise(price !== null ? Number(price) : null);
+      } catch {
+        // Wallet info is a nicety here — the send API still enforces it.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [template.category]);
+
+  const estimatedCostPaise =
+    pricePaise !== null ? pricePaise * estimatedReach : null;
+  const insufficientFunds =
+    walletBalancePaise !== null &&
+    estimatedCostPaise !== null &&
+    estimatedCostPaise > walletBalancePaise;
+
+  const formatINR = (paise: number) =>
+    new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(
+      paise / 100,
+    );
 
   useEffect(() => {
     async function calculateReach() {
@@ -62,6 +101,8 @@ export function Step4ScheduleSend({
             .from('contacts')
             .select('*', { count: 'exact', head: true });
           setEstimatedReach(count ?? 0);
+        } else if (audience.type === 'contacts' && audience.contactIds) {
+          setEstimatedReach(audience.contactIds.length);
         } else if (audience.type === 'tags' && audience.tagIds && audience.tagIds.length > 0) {
           const { data: contactTags } = await supabase
             .from('contact_tags')
@@ -86,6 +127,8 @@ export function Step4ScheduleSend({
   const audienceLabel =
     audience.type === 'all'
       ? t('scheduleSend.audienceAll')
+      : audience.type === 'contacts'
+      ? t('scheduleSend.audienceContacts')
       : audience.type === 'tags'
         ? t('scheduleSend.audienceTags')
         : audience.type === 'csv'
@@ -141,7 +184,28 @@ export function Step4ScheduleSend({
             <p className="text-xs text-muted-foreground">Language</p>
             <p className="text-foreground">{template.language ?? 'en_US'}</p>
           </div>
+          <div>
+            <p className="text-xs text-muted-foreground">{t('scheduleSend.estimatedCost')}</p>
+            <div className="flex items-center gap-1.5">
+              <Wallet className="h-3.5 w-3.5 text-primary" />
+              <p className="font-medium text-foreground">
+                {estimatedCostPaise !== null ? formatINR(estimatedCostPaise) : '—'}
+              </p>
+            </div>
+          </div>
+          <div>
+            <p className="text-xs text-muted-foreground">{t('scheduleSend.walletBalance')}</p>
+            <p className={`font-medium ${insufficientFunds ? 'text-red-400' : 'text-foreground'}`}>
+              {walletBalancePaise !== null ? formatINR(walletBalancePaise) : '—'}
+            </p>
+          </div>
         </div>
+        {insufficientFunds && (
+          <p className="flex items-center gap-1.5 text-xs text-amber-500">
+            <AlertTriangle className="h-3.5 w-3.5" />
+            {t('scheduleSend.insufficientFunds')}
+          </p>
+        )}
       </div>
 
       {/* Processing overlay */}

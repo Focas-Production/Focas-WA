@@ -14,7 +14,9 @@ export interface CustomFieldFilter {
 }
 
 export interface AudienceConfig {
-  type: 'all' | 'tags' | 'custom_field' | 'csv';
+  type: 'all' | 'contacts' | 'tags' | 'custom_field' | 'csv';
+  /** Hand-picked contact IDs (the "Select Contacts" audience type). */
+  contactIds?: string[];
   tagIds?: string[];
   customField?: CustomFieldFilter;
   csvContacts?: { phone: string; name?: string }[];
@@ -161,6 +163,23 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
       const { data, error } = await supabase.from('contacts').select('*');
       if (error) throw new Error(`Failed to fetch contacts: ${error.message}`);
       contacts = data ?? [];
+    } else if (
+      audience.type === 'contacts' &&
+      audience.contactIds &&
+      audience.contactIds.length > 0
+    ) {
+      // Page the IN clause — PostgREST caps it around 1000 values.
+      const PAGE = 500;
+      for (let i = 0; i < audience.contactIds.length; i += PAGE) {
+        const slice = audience.contactIds.slice(i, i + PAGE);
+        const { data, error } = await supabase
+          .from('contacts')
+          .select('*')
+          .in('id', slice);
+        if (error)
+          throw new Error(`Failed to fetch contacts: ${error.message}`);
+        contacts.push(...(data ?? []));
+      }
     } else if (
       audience.type === 'tags' &&
       audience.tagIds &&
@@ -364,6 +383,7 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
           template_variables: payload.variables,
           audience_filter: {
             type: payload.audience.type,
+            contactIds: payload.audience.contactIds,
             tagIds: payload.audience.tagIds,
             customField: payload.audience.customField,
             excludeTagIds: payload.audience.excludeTagIds,

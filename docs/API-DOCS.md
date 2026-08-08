@@ -208,6 +208,19 @@ curl "$WACRM_BASE_URL/api/v1/broadcasts/<broadcast_id>" \
   -H "Authorization: Bearer $WACRM_API_KEY"
 ```
 
+### Wallet billing
+
+Every **template** send (single or broadcast, dashboard or API) is
+prepaid from the account wallet (Settings → Wallet). Each message is
+debited at its Meta-category rate before the Meta call; a send Meta
+rejects — or later reports `failed` — is refunded automatically.
+Free-form/session messages are never charged.
+
+If the wallet runs dry mid-broadcast, the remaining recipients are
+marked `failed` with `Insufficient wallet balance` (visible when you
+poll the broadcast). Single template sends return HTTP `402` with the
+same message. Top up in Settings → Wallet before retrying.
+
 ## Reading data
 
 ```bash

@@ -29,6 +29,13 @@ import {
 import { isMessageTemplate } from '@/lib/whatsapp/template-row-guard';
 import type { MessageTemplate } from '@/types';
 import { findOrCreateContact } from '@/lib/api/v1/contacts';
+import {
+  getTemplateCharge,
+  chargeTemplateSend,
+  stampChargeReference,
+  refundTemplateCharge,
+  WalletError,
+} from '@/lib/wallet/wallet';
 
 /** Thrown by createBroadcast on a caller-visible failure; route maps it. */
 export class BroadcastError extends Error {
@@ -64,6 +71,8 @@ interface PlannedRecipient {
 
 export interface BroadcastPlan {
   broadcastId: string;
+  /** Tenancy key — deliverBroadcast charges this account's wallet. */
+  accountId: string;
   templateName: string;
   templateLanguage: string;
   phoneNumberId: string;
@@ -236,6 +245,7 @@ export async function createBroadcast(
 
   return {
     broadcastId: broadcast.id,
+    accountId,
     templateName,
     templateLanguage,
     phoneNumberId: config.phone_number_id,
@@ -265,7 +275,52 @@ export async function deliverBroadcast(
 ): Promise<void> {
   let sentCount = 0;
 
+  // One price lookup for the whole fan-out; each recipient is then
+  // atomically debited (reference = its recipient-row id, a natural
+  // idempotency key) before its Meta call and refunded on failure.
+  const { category: chargeCategory, pricePaise } = await getTemplateCharge(
+    plan.accountId,
+    plan.templateName,
+    plan.templateLanguage
+  );
+  let walletExhausted = false;
+
   for (const recipient of plan.planned) {
+    if (walletExhausted) {
+      await db
+        .from('broadcast_recipients')
+        .update({
+          status: 'failed',
+          error_message: 'Insufficient wallet balance',
+        })
+        .eq('id', recipient.recipientRowId);
+      continue;
+    }
+
+    try {
+      await chargeTemplateSend({
+        accountId: plan.accountId,
+        reference: recipient.recipientRowId,
+        category: chargeCategory,
+        pricePaise,
+        description: `Template "${plan.templateName}" to ${recipient.phone}`,
+      });
+    } catch (error) {
+      const isFunds =
+        error instanceof WalletError && error.code === 'insufficient_balance';
+      if (isFunds) walletExhausted = true;
+      await db
+        .from('broadcast_recipients')
+        .update({
+          status: 'failed',
+          error_message: isFunds
+            ? 'Insufficient wallet balance'
+            : 'Wallet charge failed',
+        })
+        .eq('id', recipient.recipientRowId);
+      continue;
+    }
+
     const variants = phoneVariants(recipient.phone);
     let sentMessageId: string | null = null;
     let lastError: string | null = null;
@@ -294,6 +349,7 @@ export async function deliverBroadcast(
 
     if (sentMessageId) {
       sentCount++;
+      await stampChargeReference(recipient.recipientRowId, sentMessageId);
       await db
         .from('broadcast_recipients')
         .update({
@@ -304,6 +360,7 @@ export async function deliverBroadcast(
         })
         .eq('id', recipient.recipientRowId);
     } else {
+      await refundTemplateCharge(recipient.recipientRowId, 'Meta send failed');
       await db
         .from('broadcast_recipients')
         .update({

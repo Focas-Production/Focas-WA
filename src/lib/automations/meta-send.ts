@@ -12,6 +12,12 @@ import {
   isRecipientNotAllowedError,
 } from '@/lib/whatsapp/phone-utils'
 import { supabaseAdmin } from './admin-client'
+import {
+  getTemplateCharge,
+  chargeTemplateSend,
+  stampChargeReference,
+  refundTemplateCharge,
+} from '@/lib/wallet/wallet'
 
 // ------------------------------------------------------------
 // Automation-side Meta sender.
@@ -163,6 +169,27 @@ async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: str
     return r.messageId
   }
 
+  // Template sends are prepaid — debit the wallet before the Meta
+  // call (throws on insufficient balance, which fails this automation
+  // step with a clear message), refund if every variant is rejected.
+  let walletChargeRef: string | null = null
+  if (input.kind === 'template') {
+    const { category, pricePaise } = await getTemplateCharge(
+      input.accountId,
+      input.templateName,
+      input.language,
+    )
+    walletChargeRef = `prep:${crypto.randomUUID()}`
+    await chargeTemplateSend({
+      accountId: input.accountId,
+      reference: walletChargeRef,
+      category,
+      pricePaise,
+      description: `Template "${input.templateName}" to ${sanitized} (automation)`,
+      createdBy: input.userId,
+    })
+  }
+
   // Same phone-variant retry as /api/whatsapp/send — Meta sandbox and
   // numbers registered with/without a trunk 0 both require this to
   // reliably land a message.
@@ -170,19 +197,30 @@ async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: str
   let workingPhone = sanitized
   let waMessageId = ''
   let lastError: unknown = null
-  for (const v of variants) {
-    try {
-      waMessageId = await attempt(v)
-      workingPhone = v
-      lastError = null
-      break
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      if (!isRecipientNotAllowedError(msg)) throw err
-      lastError = err
+  try {
+    for (const v of variants) {
+      try {
+        waMessageId = await attempt(v)
+        workingPhone = v
+        lastError = null
+        break
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        if (!isRecipientNotAllowedError(msg)) throw err
+        lastError = err
+      }
     }
+    if (lastError) throw lastError
+  } catch (err) {
+    if (walletChargeRef) {
+      await refundTemplateCharge(walletChargeRef, 'Meta send failed')
+    }
+    throw err
   }
-  if (lastError) throw lastError
+
+  if (walletChargeRef && waMessageId) {
+    await stampChargeReference(walletChargeRef, waMessageId)
+  }
 
   if (workingPhone !== sanitized) {
     await db.from('contacts').update({ phone: workingPhone }).eq('id', contact.id)

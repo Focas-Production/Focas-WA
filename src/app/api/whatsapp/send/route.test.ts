@@ -143,6 +143,19 @@ vi.mock('@/lib/whatsapp/encryption', () => ({
   isLegacyFormat: vi.fn(() => false),
 }))
 
+// Wallet charging is exercised by its own unit tests; here it must
+// simply not block the send (it would otherwise hit a real service-
+// role client with no env configured).
+vi.mock('@/lib/wallet/wallet', () => ({
+  getTemplateCharge: vi.fn(async () => ({ category: 'marketing', pricePaise: 79 })),
+  chargeTemplateSend: vi.fn(async () => {}),
+  stampChargeReference: vi.fn(async () => {}),
+  refundTemplateCharge: vi.fn(async () => {}),
+  WalletError: class WalletError extends Error {
+    code = 'wallet_error'
+  },
+}))
+
 const { sendTemplateMessage } = vi.hoisted(() => ({
   sendTemplateMessage: vi.fn(async () => ({ messageId: 'wamid-1' })),
 }))
