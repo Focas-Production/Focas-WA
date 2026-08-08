@@ -259,6 +259,53 @@ export async function sendTextMessage(
   return { messageId: data.messages[0].id }
 }
 
+export interface SendTypingIndicatorArgs {
+  phoneNumberId: string
+  accessToken: string
+  /**
+   * Meta wamid of the CONTACT's inbound message being replied to.
+   * Meta only shows "typing…" as an acknowledgment of an incoming
+   * message — there is no free-standing typing API.
+   */
+  messageId: string
+}
+
+/**
+ * Show "typing…" in the contact's chat while a reply is being prepared.
+ *
+ * Piggybacks on the mark-as-read endpoint: Meta bundles the two, so this
+ * call ALSO marks the inbound message as read (blue ticks) — callers
+ * must be OK with that side effect. The indicator auto-dismisses after
+ * ~25 seconds or as soon as the next message is sent, whichever comes
+ * first, and is only valid inside the 24h customer-service window.
+ *
+ * Cosmetic by design: callers should treat failures as non-fatal (an
+ * expired wamid or closed session window makes Meta reject the call —
+ * that must never block the actual reply).
+ */
+export async function sendTypingIndicator(
+  args: SendTypingIndicatorArgs
+): Promise<void> {
+  const { phoneNumberId, accessToken, messageId } = args
+  const url = `${META_API_BASE}/${phoneNumberId}/messages`
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      status: 'read',
+      message_id: messageId,
+      typing_indicator: { type: 'text' },
+    }),
+  })
+  if (!response.ok) {
+    await throwMetaError(response, `Meta API error: ${response.status}`)
+  }
+}
+
 export type MediaKind = 'image' | 'video' | 'document' | 'audio'
 
 export interface SendMediaMessageArgs {

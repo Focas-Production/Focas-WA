@@ -9,6 +9,8 @@ import { logAiUsage } from './usage'
 import { latestUserMessage } from './query'
 import { engineSendText } from '@/lib/flows/meta-send'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
+import { sendTypingIndicator } from '@/lib/whatsapp/meta-api'
+import { decrypt } from '@/lib/whatsapp/encryption'
 
 interface DispatchArgs {
   /** Tenancy key — drives config, contact, and whatsapp_config lookups. */
@@ -18,6 +20,11 @@ interface DispatchArgs {
   /** The account's WhatsApp config owner, used for the outbound send's
    *  audit columns (mirrors how the flow runner passes it through). */
   configOwnerUserId: string
+  /** Meta wamid of the inbound message that triggered this dispatch.
+   *  Used to light the "typing…" indicator (a read-acknowledgment of
+   *  that message) while the LLM generates. Optional: older callers
+   *  omitting it just skip the indicator. */
+  inboundMessageId?: string
 }
 
 /**
@@ -42,7 +49,13 @@ interface DispatchArgs {
 export async function dispatchInboundToAiReply(
   args: DispatchArgs,
 ): Promise<void> {
-  const { accountId, conversationId, contactId, configOwnerUserId } = args
+  const {
+    accountId,
+    conversationId,
+    contactId,
+    configOwnerUserId,
+    inboundMessageId,
+  } = args
 
   try {
     const db = supabaseAdmin()
@@ -96,6 +109,36 @@ export async function dispatchInboundToAiReply(
         `[ai auto-reply] account ${accountId} hit the per-account rate limit — skipping this inbound.`,
       )
       return
+    }
+
+    // Every eligibility gate has passed — a reply is genuinely coming,
+    // so light "typing…" on the customer's phone (and turn their ticks
+    // blue) for the seconds the knowledge retrieval + LLM call take.
+    // Placed BEFORE those slow steps: that latency window is the whole
+    // point. Best-effort — a Meta rejection must never cost us the
+    // reply — and awaited (not floating) because we're inside the
+    // webhook's `after()` block, where a detached promise can be frozen
+    // before it delivers.
+    if (inboundMessageId) {
+      try {
+        const { data: waConfig } = await db
+          .from('whatsapp_config')
+          .select('phone_number_id, access_token')
+          .eq('account_id', accountId)
+          .single()
+        if (waConfig) {
+          await sendTypingIndicator({
+            phoneNumberId: waConfig.phone_number_id,
+            accessToken: decrypt(waConfig.access_token),
+            messageId: inboundMessageId,
+          })
+        }
+      } catch (err) {
+        console.warn(
+          '[ai auto-reply] typing indicator failed (non-fatal):',
+          err instanceof Error ? err.message : err,
+        )
+      }
     }
 
     // Ground the reply in the account's knowledge base (best-effort).

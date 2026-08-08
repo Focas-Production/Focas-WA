@@ -950,6 +950,9 @@ async function processMessage(
       conversationId: conversation.id,
       contactId: contactRecord.id,
       configOwnerUserId,
+      // Lets the auto-reply light "typing…" (a read-ack of this inbound)
+      // while the LLM generates.
+      inboundMessageId: message.id,
     })
   }
 

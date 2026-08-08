@@ -220,6 +220,28 @@ export function MessageComposer({
     el.style.height = `${Math.min(el.scrollHeight, 96)}px`;
   }, []);
 
+  // Show "typing…" on the contact's phone while the agent composes.
+  // WhatsApp's indicator lives ~25s per acknowledgment, so one ping per
+  // 20s of sustained typing keeps it lit without spamming Meta. Purely
+  // cosmetic: fire-and-forget, errors swallowed, and the server soft-skips
+  // when there's nothing to acknowledge (no inbound yet / window closed).
+  const lastTypingPingRef = useRef(0);
+  useEffect(() => {
+    // New thread = new acknowledgment target; let the next keystroke ping.
+    lastTypingPingRef.current = 0;
+  }, [conversationId]);
+  const notifyTyping = useCallback(() => {
+    if (inputsDisabled) return;
+    const now = Date.now();
+    if (now - lastTypingPingRef.current < 20_000) return;
+    lastTypingPingRef.current = now;
+    void fetch("/api/whatsapp/typing", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversation_id: conversationId }),
+    }).catch(() => {});
+  }, [conversationId, inputsDisabled]);
+
   const handleSend = useCallback(async () => {
     const trimmed = text.trim();
     if (!trimmed || sending || sessionExpired) return;
@@ -250,8 +272,10 @@ export function MessageComposer({
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
       setText(e.target.value);
       adjustHeight();
+      // Only signal on real composing — clearing the box isn't typing.
+      if (e.target.value.trim()) notifyTyping();
     },
-    [adjustHeight]
+    [adjustHeight, notifyTyping]
   );
 
   // Ask the AI assistant for a suggested reply and drop it into the
@@ -281,6 +305,10 @@ export function MessageComposer({
         return;
       }
       setText(draftText);
+      // A programmatic setText never fires the textarea's onChange, but
+      // the agent is now actively reviewing a reply — light the
+      // indicator so the contact sees activity while they tweak it.
+      notifyTyping();
       // Let the textarea grow to fit and drop the cursor at the end so
       // the agent can tweak immediately.
       requestAnimationFrame(() => {
@@ -296,7 +324,7 @@ export function MessageComposer({
     } finally {
       setDrafting(false);
     }
-  }, [drafting, conversationId, adjustHeight]);
+  }, [drafting, conversationId, adjustHeight, notifyTyping]);
 
   // ---- Interactive message + quick replies --------------------------
 
