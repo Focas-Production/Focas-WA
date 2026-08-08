@@ -9,7 +9,7 @@ import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
-import { refundTemplateCharge } from '@/lib/wallet/wallet'
+import { refundTemplateCharge, refundBroadcastMessage } from '@/lib/wallet/wallet'
 import {
   handleTemplateWebhookChange,
   isTemplateWebhookField,
@@ -81,6 +81,13 @@ interface WhatsAppWebhookEntry {
         status: string
         timestamp: string
         recipient_id: string
+        /** Present on `failed` statuses — Meta's reason for the failure. */
+        errors?: Array<{
+          code?: number
+          title?: string
+          message?: string
+          error_data?: { details?: string }
+        }>
       }>
     }
     field: string
@@ -368,17 +375,44 @@ function isValidStatusTransition(current: string, incoming: string): boolean {
   return ii > ci
 }
 
+/** Flatten Meta's status `errors` array into one readable line, e.g.
+ *  "131042 Payment issue: Ensure a valid payment method is set up". */
+function statusErrorText(
+  errors?: Array<{
+    code?: number
+    title?: string
+    message?: string
+    error_data?: { details?: string }
+  }>,
+): string | null {
+  if (!errors || errors.length === 0) return null
+  const parts = errors.map((e) => {
+    const label = [e.code, e.title || e.message].filter(Boolean).join(' ')
+    const details = e.error_data?.details
+    return details ? `${label}: ${details}` : label
+  })
+  return parts.filter(Boolean).join('; ').slice(0, 500) || null
+}
+
 async function handleStatusUpdate(status: {
   id: string
   status: string
   timestamp: string
   recipient_id: string
+  errors?: Array<{
+    code?: number
+    title?: string
+    message?: string
+    error_data?: { details?: string }
+  }>
 }) {
   // 0) Wallet: a `failed` delivery status reverses the send-time
-  //    charge (charge-on-send, refund-on-failure). The refund is
-  //    keyed by wamid and idempotent, so a replayed webhook can't
-  //    double-refund; messages that were never charged (session
-  //    messages) simply no-op.
+  //    charge (charge-on-send, refund-on-failure). This covers
+  //    SINGLE sends (inbox/automation), whose debit is keyed by
+  //    wamid. Broadcast messages sit inside a campaign-level debit —
+  //    they're refunded below, once the recipient row identifies the
+  //    broadcast. Both paths are idempotent per wamid; session
+  //    messages were never charged and no-op.
   if (status.status === 'failed') {
     await refundTemplateCharge(status.id, 'delivery failed')
   }
@@ -409,7 +443,7 @@ async function handleStatusUpdate(status: {
 
   const { data: recipient, error: recFetchErr } = await supabaseAdmin()
     .from('broadcast_recipients')
-    .select('id, status')
+    .select('id, status, broadcast_id')
     .eq('whatsapp_message_id', status.id)
     .maybeSingle()
 
@@ -425,6 +459,13 @@ async function handleStatusUpdate(status: {
     if (status.status === 'sent' && !('sent_at' in update)) update.sent_at = tsIso
     if (status.status === 'delivered') update.delivered_at = tsIso
     if (status.status === 'read') update.read_at = tsIso
+    // A failed status carries Meta's reason (e.g. "131042 Payment
+    // issue: …") — persist it so the broadcast detail page can show
+    // WHY instead of a bare "Failed".
+    if (status.status === 'failed') {
+      update.error_message =
+        statusErrorText(status.errors) ?? 'Delivery failed (no reason given by Meta)'
+    }
 
     const { error: recUpdateErr } = await supabaseAdmin()
       .from('broadcast_recipients')
@@ -433,6 +474,14 @@ async function handleStatusUpdate(status: {
 
     if (recUpdateErr) {
       console.error('Error updating broadcast recipient status:', recUpdateErr)
+    }
+
+    // Wallet: this message was paid inside its campaign's single
+    // debit — refund its share now that delivery failed. Keyed by
+    // wamid, idempotent, disjoint from the campaign settle (which
+    // only covers never-sent recipients).
+    if (status.status === 'failed' && recipient.broadcast_id) {
+      await refundBroadcastMessage(recipient.broadcast_id as string, status.id)
     }
   }
 

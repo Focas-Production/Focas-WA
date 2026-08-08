@@ -35,6 +35,13 @@ Prepaid wallet for template messages, plus broadcast-audience fixes.
   double-credit-proof), plus an owner-only manual credit for money
   received off-gateway. Full transaction history with running balance,
   type filters, and pagination.
+- **Campaign-level ledger.** Broadcasts write ONE wallet debit for the
+  whole campaign (`Broadcast "X" — N × template`) and at most one
+  aggregate refund for unsent recipients, instead of a ledger row per
+  contact — the transaction table stays small however large the
+  audience. Individual delivery failures reported later by Meta are
+  still refunded per message (keyed by wamid, idempotent). Single
+  inbox/automation sends remain one row each.
 - **Broadcast cost preview.** The review step shows the campaign's
   estimated cost and current wallet balance, and warns when the
   balance won't cover the send.

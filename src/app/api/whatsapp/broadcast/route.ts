@@ -20,6 +20,7 @@ import {
   chargeTemplateSend,
   stampChargeReference,
   refundTemplateCharge,
+  hasBroadcastDebit,
   WalletError,
 } from '@/lib/wallet/wallet'
 
@@ -110,6 +111,7 @@ export async function POST(request: Request) {
       template_name,
       template_language,
       template_params,
+      charged_broadcast_id,
     } = body
 
     // Normalize to a list of {phone, params} regardless of shape.
@@ -182,11 +184,26 @@ export async function POST(request: Request) {
     }
     const templateRow = rawTemplateRow ?? null
 
-    // Wallet: template sends are prepaid. Resolve the per-message
-    // price once; each recipient is atomically debited before its
-    // Meta call and refunded if the send fails. When the wallet runs
-    // dry mid-batch, the remaining recipients fail fast with a clear
-    // message instead of hammering the charge RPC.
+    // Wallet: template sends are prepaid. Two modes:
+    //   - Campaign-prepaid (dashboard broadcasts): the wizard already
+    //     debited the whole campaign in one ledger row via
+    //     /api/wallet/broadcast, and passes `charged_broadcast_id`.
+    //     Verify that debit exists, then skip per-message charging —
+    //     unsent recipients are refunded in one aggregate settle row.
+    //   - Per-message (direct API callers without a campaign charge):
+    //     each recipient is atomically debited before its Meta call
+    //     and refunded if the send fails.
+    let campaignPrepaid = false
+    if (typeof charged_broadcast_id === 'string' && charged_broadcast_id) {
+      campaignPrepaid = await hasBroadcastDebit(accountId, charged_broadcast_id)
+      if (!campaignPrepaid) {
+        return NextResponse.json(
+          { error: 'Broadcast is not prepaid — charge it via /api/wallet/broadcast first.' },
+          { status: 402 },
+        )
+      }
+    }
+
     const { category: chargeCategory, pricePaise } = await getTemplateCharge(
       accountId,
       template_name,
@@ -221,28 +238,31 @@ export async function POST(request: Request) {
         continue
       }
 
-      const chargeRef = `prep:${crypto.randomUUID()}`
-      try {
-        await chargeTemplateSend({
-          accountId,
-          reference: chargeRef,
-          category: chargeCategory,
-          pricePaise,
-          description: `Template "${template_name}" to ${sanitized}`,
-          createdBy: user.id,
-        })
-      } catch (err) {
-        if (err instanceof WalletError && err.code === 'insufficient_balance') {
-          walletExhausted = true
-          results.push({
-            phone: recipient.phone,
-            status: 'failed',
-            error: 'Insufficient wallet balance',
+      let chargeRef: string | null = null
+      if (!campaignPrepaid) {
+        chargeRef = `prep:${crypto.randomUUID()}`
+        try {
+          await chargeTemplateSend({
+            accountId,
+            reference: chargeRef,
+            category: chargeCategory,
+            pricePaise,
+            description: `Template "${template_name}" to ${sanitized}`,
+            createdBy: user.id,
           })
-          failedCount++
-          continue
+        } catch (err) {
+          if (err instanceof WalletError && err.code === 'insufficient_balance') {
+            walletExhausted = true
+            results.push({
+              phone: recipient.phone,
+              status: 'failed',
+              error: 'Insufficient wallet balance',
+            })
+            failedCount++
+            continue
+          }
+          throw err
         }
-        throw err
       }
 
       // Retry with phone variants on "not in allowed list" so numbers
@@ -279,7 +299,7 @@ export async function POST(request: Request) {
       }
 
       if (sentMessageId) {
-        await stampChargeReference(chargeRef, sentMessageId)
+        if (chargeRef) await stampChargeReference(chargeRef, sentMessageId)
         results.push({
           phone: recipient.phone,
           status: 'sent',
@@ -287,7 +307,7 @@ export async function POST(request: Request) {
         })
         sentCount++
       } else {
-        await refundTemplateCharge(chargeRef, 'Meta send failed')
+        if (chargeRef) await refundTemplateCharge(chargeRef, 'Meta send failed')
         console.error(
           `Failed to send broadcast to ${recipient.phone}:`,
           lastError

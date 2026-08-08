@@ -437,6 +437,27 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
         }
       }
 
+      // ── Step 3.5: Prepay the campaign from the wallet ─────────────
+      // ONE ledger debit for the whole broadcast (rate × recipients).
+      // The send API batches below skip per-message charging because
+      // the campaign is already paid; unsent recipients are refunded
+      // in one aggregate row by the settle call at the end.
+      const chargeRes = await fetch('/api/wallet/broadcast', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ broadcast_id: broadcast.id, action: 'charge' }),
+      });
+      if (!chargeRes.ok) {
+        const chargeData = await chargeRes.json().catch(() => null);
+        await supabase
+          .from('broadcasts')
+          .update({ status: 'failed' })
+          .eq('id', broadcast.id);
+        throw new Error(
+          chargeData?.error ?? 'Failed to charge the wallet for this broadcast.',
+        );
+      }
+
       // ── Step 4: Fetch recipients (joined contact) + preload custom values
       setProgress(30);
       const { data: recipients, error: recipientsFetchError } = await supabase
@@ -501,6 +522,7 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
               recipients: apiRecipients,
               template_name: payload.template.name,
               template_language: payload.template.language ?? 'en_US',
+              charged_broadcast_id: broadcast.id,
             }),
           });
 
@@ -576,8 +598,16 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
 
       // ── Step 5: Finalize status ───────────────────────────────────
       // Aggregate counts are maintained by the DB trigger (migration
-      // 003); we only flip the final status here.
+      // 003); we only flip the final status here. The settle call
+      // refunds never-sent recipients as one ledger row (best-effort
+      // — the server also settles idempotently, so a lost request
+      // here can be retried by re-posting settle).
       setProgress(95);
+      await fetch('/api/wallet/broadcast', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ broadcast_id: broadcast.id, action: 'settle' }),
+      }).catch(() => {});
       const finalStatus = failedCount === totalRecipients ? 'failed' : 'sent';
       await supabase
         .from('broadcasts')

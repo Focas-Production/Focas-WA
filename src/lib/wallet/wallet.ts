@@ -8,16 +8,17 @@
 // by service_role alone (a browser session could otherwise credit
 // itself).
 //
-// Charge lifecycle (charge-on-send, refund-on-failure):
-//   1. debit BEFORE the Meta call, referenced by a provisional key
-//      (`prep:<uuid>` or the broadcast-recipient row id) — the
-//      atomic debit is what guarantees the balance never goes
-//      negative under concurrent sends,
-//   2. on Meta success, re-reference the debit to the wamid so the
-//      webhook can find it,
-//   3. on Meta failure, refund against the provisional key,
-//   4. on a later `failed` delivery status, the webhook refunds by
-//      wamid (idempotent — replays can't double-refund).
+// Charge granularity (keeps the ledger AND the database small):
+//   - SINGLE sends (inbox, automation): one debit per message,
+//     provisional reference re-stamped to the wamid on success so
+//     the webhook can refund a later delivery failure.
+//   - BROADCASTS: ONE debit for the whole campaign
+//     (reference `broadcast:<id>`, amount = rate × recipients) taken
+//     up front, then ONE aggregate refund at the end of the fan-out
+//     for recipients that never reached Meta (wamid IS NULL). A
+//     recipient Meta accepted but later reports `failed` is refunded
+//     individually by the webhook (reference = wamid — disjoint from
+//     the settle set, so the two can never double-refund).
 //
 // Session (free-form) messages are never charged.
 // ============================================================
@@ -83,23 +84,30 @@ export async function getWalletBalancePaise(accountId: string): Promise<number> 
   return Number(data?.balance_paise ?? 0)
 }
 
+/** numeric(14,2) column — keep JS float dust out of the ledger. */
+function round2(n: number): number {
+  return Math.round(n * 100) / 100
+}
+
 /**
- * Atomically debit one template send. Throws
+ * Atomically debit template send(s). `quantity` > 1 charges a whole
+ * campaign as a single ledger row. Throws
  * WalletError('insufficient_balance') when the wallet can't cover it
  * — callers surface that instead of sending.
  */
 export async function chargeTemplateSend(params: {
   accountId: string
-  /** Provisional idempotency key — recipient row id or `prep:<uuid>`. */
+  /** Idempotency key — `prep:<uuid>` or `broadcast:<id>`. */
   reference: string
   category: WalletChargeCategory
   pricePaise: number
   description: string
+  quantity?: number
   createdBy?: string | null
 }): Promise<void> {
   const { error } = await supabaseAdmin().rpc('wallet_charge', {
     p_account_id: params.accountId,
-    p_amount_paise: params.pricePaise,
+    p_amount_paise: round2(params.pricePaise * (params.quantity ?? 1)),
     p_category: params.category,
     p_description: params.description,
     p_reference_id: params.reference,
@@ -110,6 +118,36 @@ export async function chargeTemplateSend(params: {
       throw new WalletError('insufficient_balance', INSUFFICIENT_BALANCE_MESSAGE)
     }
     throw new WalletError('wallet_error', `Wallet charge failed: ${error.message}`)
+  }
+}
+
+/**
+ * Refund a known amount (aggregate campaign settle, or one webhook-
+ * reported delivery failure). Idempotent per reference; best-effort —
+ * failures are logged, never thrown.
+ */
+export async function refundWalletAmount(params: {
+  accountId: string
+  amountPaise: number
+  reference: string
+  description: string
+}): Promise<void> {
+  if (params.amountPaise <= 0) return
+  try {
+    const { error } = await supabaseAdmin().rpc('wallet_credit', {
+      p_account_id: params.accountId,
+      p_amount_paise: round2(params.amountPaise),
+      p_category: 'refund',
+      p_description: params.description,
+      p_reference_id: params.reference,
+      p_created_by: null,
+      p_type: 'refund',
+    })
+    if (error && !error.message.includes('duplicate')) {
+      console.error('[wallet] refund failed:', error.message)
+    }
+  } catch (err) {
+    console.error('[wallet] refund failed:', err)
   }
 }
 
@@ -166,6 +204,106 @@ export async function refundTemplateCharge(
     }
   } catch (err) {
     console.error('[wallet] refund failed:', err)
+  }
+}
+
+/** Does a campaign-level debit exist for this broadcast? Used by the
+ *  batch send route to confirm the campaign was prepaid. */
+export async function hasBroadcastDebit(
+  accountId: string,
+  broadcastId: string,
+): Promise<boolean> {
+  const { data } = await supabaseAdmin()
+    .from('wallet_transactions')
+    .select('id')
+    .eq('account_id', accountId)
+    .eq('type', 'debit')
+    .eq('reference_id', `broadcast:${broadcastId}`)
+    .limit(1)
+    .maybeSingle()
+  return Boolean(data)
+}
+
+/**
+ * Aggregate settle after a campaign's fan-out: refund, in ONE ledger
+ * row, every recipient that never reached Meta (status `failed` with
+ * no wamid). Recipients Meta accepted but later failed are refunded
+ * individually by the webhook (keyed by wamid), so the two sets are
+ * disjoint. Idempotent per broadcast — reference `broadcast:<id>`
+ * allows a single refund row. Best-effort; never throws.
+ */
+export async function settleBroadcastCharge(
+  accountId: string,
+  broadcastId: string,
+): Promise<void> {
+  try {
+    const db = supabaseAdmin()
+    const { data: broadcast } = await db
+      .from('broadcasts')
+      .select('name, template_name, template_language')
+      .eq('id', broadcastId)
+      .eq('account_id', accountId)
+      .maybeSingle()
+    if (!broadcast) return
+
+    const { count } = await db
+      .from('broadcast_recipients')
+      .select('id', { count: 'exact', head: true })
+      .eq('broadcast_id', broadcastId)
+      .eq('status', 'failed')
+      .is('whatsapp_message_id', null)
+    const unsent = count ?? 0
+    if (unsent === 0) return
+
+    const { pricePaise } = await getTemplateCharge(
+      accountId,
+      broadcast.template_name,
+      broadcast.template_language,
+    )
+    await refundWalletAmount({
+      accountId,
+      amountPaise: pricePaise * unsent,
+      reference: `broadcast:${broadcastId}`,
+      description: `Refund: ${unsent} unsent in broadcast "${broadcast.name}"`,
+    })
+  } catch (err) {
+    console.error('[wallet] broadcast settle failed:', err)
+  }
+}
+
+/**
+ * Refund one broadcast message the webhook reported as `failed`
+ * after Meta had accepted it. Its cost is part of the campaign-level
+ * debit, so the refund is priced from the broadcast's template and
+ * keyed by wamid (idempotent; disjoint from the aggregate settle,
+ * which only covers recipients that never got a wamid).
+ */
+export async function refundBroadcastMessage(
+  broadcastId: string,
+  wamid: string,
+): Promise<void> {
+  try {
+    const db = supabaseAdmin()
+    const { data: broadcast } = await db
+      .from('broadcasts')
+      .select('account_id, name, template_name, template_language')
+      .eq('id', broadcastId)
+      .maybeSingle()
+    if (!broadcast) return
+
+    const { pricePaise } = await getTemplateCharge(
+      broadcast.account_id,
+      broadcast.template_name,
+      broadcast.template_language,
+    )
+    await refundWalletAmount({
+      accountId: broadcast.account_id,
+      amountPaise: pricePaise,
+      reference: wamid,
+      description: `Refund (delivery failed): broadcast "${broadcast.name}"`,
+    })
+  } catch (err) {
+    console.error('[wallet] broadcast message refund failed:', err)
   }
 }
 

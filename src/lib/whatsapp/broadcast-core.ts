@@ -32,8 +32,7 @@ import { findOrCreateContact } from '@/lib/api/v1/contacts';
 import {
   getTemplateCharge,
   chargeTemplateSend,
-  stampChargeReference,
-  refundTemplateCharge,
+  settleBroadcastCharge,
   WalletError,
 } from '@/lib/wallet/wallet';
 
@@ -275,52 +274,43 @@ export async function deliverBroadcast(
 ): Promise<void> {
   let sentCount = 0;
 
-  // One price lookup for the whole fan-out; each recipient is then
-  // atomically debited (reference = its recipient-row id, a natural
-  // idempotency key) before its Meta call and refunded on failure.
+  // ONE wallet debit for the whole campaign (ledger stays small on
+  // large sends); recipients that never reach Meta are refunded in a
+  // single aggregate row by the settle at the end. Insufficient
+  // balance fails the entire broadcast up front — no partial sends.
   const { category: chargeCategory, pricePaise } = await getTemplateCharge(
     plan.accountId,
     plan.templateName,
     plan.templateLanguage
   );
-  let walletExhausted = false;
+  try {
+    await chargeTemplateSend({
+      accountId: plan.accountId,
+      reference: `broadcast:${plan.broadcastId}`,
+      category: chargeCategory,
+      pricePaise,
+      quantity: plan.planned.length,
+      description: `Broadcast — ${plan.planned.length} × Template "${plan.templateName}"`,
+    });
+  } catch (error) {
+    const message =
+      error instanceof WalletError && error.code === 'insufficient_balance'
+        ? 'Insufficient wallet balance'
+        : 'Wallet charge failed';
+    for (const recipient of plan.planned) {
+      await db
+        .from('broadcast_recipients')
+        .update({ status: 'failed', error_message: message })
+        .eq('id', recipient.recipientRowId);
+    }
+    await db
+      .from('broadcasts')
+      .update({ status: 'failed', updated_at: new Date().toISOString() })
+      .eq('id', plan.broadcastId);
+    return;
+  }
 
   for (const recipient of plan.planned) {
-    if (walletExhausted) {
-      await db
-        .from('broadcast_recipients')
-        .update({
-          status: 'failed',
-          error_message: 'Insufficient wallet balance',
-        })
-        .eq('id', recipient.recipientRowId);
-      continue;
-    }
-
-    try {
-      await chargeTemplateSend({
-        accountId: plan.accountId,
-        reference: recipient.recipientRowId,
-        category: chargeCategory,
-        pricePaise,
-        description: `Template "${plan.templateName}" to ${recipient.phone}`,
-      });
-    } catch (error) {
-      const isFunds =
-        error instanceof WalletError && error.code === 'insufficient_balance';
-      if (isFunds) walletExhausted = true;
-      await db
-        .from('broadcast_recipients')
-        .update({
-          status: 'failed',
-          error_message: isFunds
-            ? 'Insufficient wallet balance'
-            : 'Wallet charge failed',
-        })
-        .eq('id', recipient.recipientRowId);
-      continue;
-    }
-
     const variants = phoneVariants(recipient.phone);
     let sentMessageId: string | null = null;
     let lastError: string | null = null;
@@ -349,7 +339,6 @@ export async function deliverBroadcast(
 
     if (sentMessageId) {
       sentCount++;
-      await stampChargeReference(recipient.recipientRowId, sentMessageId);
       await db
         .from('broadcast_recipients')
         .update({
@@ -360,7 +349,6 @@ export async function deliverBroadcast(
         })
         .eq('id', recipient.recipientRowId);
     } else {
-      await refundTemplateCharge(recipient.recipientRowId, 'Meta send failed');
       await db
         .from('broadcast_recipients')
         .update({
@@ -370,6 +358,10 @@ export async function deliverBroadcast(
         .eq('id', recipient.recipientRowId);
     }
   }
+
+  // One aggregate refund row for every recipient that never reached
+  // Meta (their share of the up-front campaign debit).
+  await settleBroadcastCharge(plan.accountId, plan.broadcastId);
 
   // Terminal status only — counts are trigger-owned (see the note
   // above). If nothing sent, the broadcast failed outright; a partial
