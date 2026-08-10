@@ -11,7 +11,13 @@ and polish.
 
 ## [0.9.0] — 2026-08-08
 
-Prepaid wallet for template messages, plus broadcast-audience fixes.
+Prepaid wallet, scheduled broadcasts, and broadcast-audience fixes.
+
+> **Migration required:** apply `supabase/migrations/038_scheduled_broadcasts.sql`
+> (adds `broadcasts.header_media_url`, the `cancelled` status, and the
+> due-scan index). Scheduled delivery also needs `AUTOMATION_CRON_SECRET`
+> set and a once-a-minute pinger hitting `/api/broadcasts/cron` — see
+> `.env.local.example`.
 
 > **Migration required:** apply `supabase/migrations/037_wallet.sql`
 > (wallet + ledger + pricing + top-up tables and the service-role-only
@@ -21,6 +27,19 @@ Prepaid wallet for template messages, plus broadcast-audience fixes.
 
 ### Added
 
+- **Scheduled broadcasts.** The wizard's final step now offers "Send
+  now" or "Schedule for later" with a date-time picker. A scheduled
+  broadcast is fully materialized up front (audience resolved, wallet
+  charged, variables + header media stored) and delivered entirely
+  **server-side** by `/api/broadcasts/cron` at the chosen time — no
+  browser tab needs to stay open. Scheduled broadcasts can be
+  cancelled from their detail page before send time; unsent messages
+  are refunded to the wallet in one ledger row.
+- **Resume drafts.** "Save as Draft" now persists the complete wizard
+  config (audience incl. hand-picked contacts and CSV rows, variable
+  mappings, header media), and clicking a draft on the Broadcasts list
+  reopens the wizard exactly where you left off. Sending or scheduling
+  a resumed draft cleans up the draft row.
 - **Wallet (Settings → Wallet).** Template sends are now billed from a
   prepaid, account-scoped wallet — WATI-style. Every template message
   (dashboard send, broadcast, automation, public API) is debited at

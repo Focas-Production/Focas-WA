@@ -1,7 +1,7 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useEffect, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
 import { toast } from 'sonner';
@@ -21,13 +21,28 @@ const steps = [
   { label: 'send', key: 'send' },
 ] as const;
 
+// useSearchParams (the ?draft= resume param) requires a Suspense
+// boundary for static prerendering — same pattern as the settings
+// page.
 export default function NewBroadcastPage() {
+  return (
+    <Suspense fallback={null}>
+      <NewBroadcastPageInner />
+    </Suspense>
+  );
+}
+
+function NewBroadcastPageInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const t = useTranslations('Broadcasts.new');
   const { accountId } = useAuth();
   const { createAndSendBroadcast, isProcessing, progress } = useBroadcastSending();
 
   const [currentStep, setCurrentStep] = useState(0);
+  // Draft row being resumed (via /broadcasts/new?draft=<id>) — the
+  // row is updated on re-save and deleted after a successful send.
+  const [draftId, setDraftId] = useState<string | null>(null);
   const [template, setTemplate] = useState<MessageTemplate | null>(null);
   const [audience, setAudience] = useState<{
     type: 'all' | 'contacts' | 'tags' | 'custom_field' | 'csv';
@@ -47,7 +62,55 @@ export default function NewBroadcastPage() {
   const [headerMediaUrl, setHeaderMediaUrl] = useState('');
   const [name, setName] = useState('');
 
-  async function handleSend() {
+  // Resume a saved draft: prefill every wizard step from the row.
+  useEffect(() => {
+    const id = searchParams.get('draft');
+    if (!id) return;
+    let cancelled = false;
+    (async () => {
+      const supabase = createClient();
+      const { data: draft } = await supabase
+        .from('broadcasts')
+        .select('*')
+        .eq('id', id)
+        .eq('status', 'draft')
+        .maybeSingle();
+      if (!draft || cancelled) return;
+
+      const { data: templateRow } = await supabase
+        .from('message_templates')
+        .select('*')
+        .eq('name', draft.template_name)
+        .eq('language', draft.template_language)
+        .maybeSingle();
+
+      if (cancelled) return;
+      setDraftId(draft.id);
+      setName(draft.name ?? '');
+      if (templateRow) setTemplate(templateRow as MessageTemplate);
+      if (draft.template_variables) setVariables(draft.template_variables);
+      if (draft.header_media_url) setHeaderMediaUrl(draft.header_media_url);
+      const af = draft.audience_filter as typeof audience | null;
+      if (af?.type) {
+        setAudience({
+          type: af.type,
+          contactIds: af.contactIds,
+          tagIds: af.tagIds,
+          customField: af.customField,
+          csvContacts: af.csvContacts,
+          excludeTagIds: af.excludeTagIds,
+        });
+      }
+      // Land on the audience step when the template resolved (the
+      // most likely thing left to review); else start at step 0.
+      setCurrentStep(templateRow ? 1 : 0);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [searchParams]);
+
+  async function handleSend(scheduledAt?: string) {
     if (!template) return;
 
     try {
@@ -64,7 +127,14 @@ export default function NewBroadcastPage() {
         },
         variables,
         headerMediaUrl,
+        scheduledAt,
+        draftId: draftId ?? undefined,
       });
+      if (scheduledAt) {
+        toast.success(
+          t('toastScheduled', { when: new Date(scheduledAt).toLocaleString() }),
+        );
+      }
       router.push(`/broadcasts/${broadcastId}`);
     } catch (err) {
       // Previously swallowed with console.error — the wizard would
@@ -76,13 +146,11 @@ export default function NewBroadcastPage() {
   }
 
   /**
-   * Writes a draft broadcast row — no recipients, no sending. The user
-   * can revisit it via the list page to finish the flow later. We
-   * don't persist the in-progress audience/variable config here
-   * because the current schema doesn't carry it past `audience_filter`
-   * and `template_variables`; those are enough for the user to
-   * recognize the draft but not to exactly round-trip into the wizard.
-   * A full resume-draft UX is a future polish.
+   * Writes (or updates) a draft broadcast row — no recipients, no
+   * sending. The full wizard config is persisted (audience incl.
+   * hand-picked contacts / CSV rows, variables, header media), so
+   * clicking the draft on the list page round-trips back into the
+   * wizard exactly where the user left off.
    */
   async function handleSaveDraft() {
     if (!template || !name.trim()) {
@@ -103,25 +171,36 @@ export default function NewBroadcastPage() {
       return;
     }
 
-    const { error } = await supabase.from('broadcasts').insert({
-      user_id: user.id,
-      account_id: accountId,
+    const draftRow = {
       name: name.trim(),
       template_name: template.name,
       template_language: template.language ?? 'en_US',
       template_variables: variables,
+      header_media_url: headerMediaUrl.trim() || null,
       audience_filter: {
         type: audience.type,
+        contactIds: audience.contactIds,
         tagIds: audience.tagIds,
+        customField: audience.customField,
+        csvContacts: audience.csvContacts,
+        excludeTagIds: audience.excludeTagIds,
       },
-      status: 'draft',
-      total_recipients: 0,
-      sent_count: 0,
-      delivered_count: 0,
-      read_count: 0,
-      replied_count: 0,
-      failed_count: 0,
-    });
+      status: 'draft' as const,
+    };
+
+    const { error } = draftId
+      ? await supabase.from('broadcasts').update(draftRow).eq('id', draftId)
+      : await supabase.from('broadcasts').insert({
+          ...draftRow,
+          user_id: user.id,
+          account_id: accountId,
+          total_recipients: 0,
+          sent_count: 0,
+          delivered_count: 0,
+          read_count: 0,
+          replied_count: 0,
+          failed_count: 0,
+        });
 
     if (error) {
       toast.error(t('toastFailedDraft', { error: error.message }));

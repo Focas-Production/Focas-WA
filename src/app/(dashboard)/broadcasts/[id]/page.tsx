@@ -32,6 +32,7 @@ import {
   Download,
   ChevronDown,
   Trash2,
+  CalendarClock,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -158,6 +159,7 @@ export default function BroadcastDetailPage() {
   );
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
 
   useEffect(() => {
     async function fetchData() {
@@ -224,9 +226,96 @@ export default function BroadcastDetailPage() {
     downloadBlob(`broadcast-${safeName}-${broadcastId.slice(0, 8)}.csv`, csv);
   }
 
+  /**
+   * Cancel a scheduled broadcast before the cron picks it up: flip
+   * pending recipients to failed/"Cancelled", mark the broadcast
+   * cancelled, then settle the campaign's wallet debit — the settle
+   * refunds every never-sent recipient in one ledger row.
+   */
+  async function handleCancelSchedule() {
+    setCancelling(true);
+    try {
+      const supabase = createClient();
+      // Guarded flip — if the cron claimed it in the meantime
+      // (scheduled → sending), this matches 0 rows and we bail.
+      const { data: claimed } = await supabase
+        .from('broadcasts')
+        .update({ status: 'cancelled' })
+        .eq('id', broadcastId)
+        .eq('status', 'scheduled')
+        .select('id')
+        .maybeSingle();
+      if (!claimed) {
+        toast.error(t('toastCancelTooLate'));
+        return;
+      }
+      await supabase
+        .from('broadcast_recipients')
+        .update({ status: 'failed', error_message: 'Cancelled' })
+        .eq('broadcast_id', broadcastId)
+        .eq('status', 'pending');
+      await fetch('/api/wallet/broadcast', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ broadcast_id: broadcastId, action: 'settle' }),
+      }).catch(() => {});
+      toast.success(t('toastCancelled'));
+      setBroadcast((prev) => (prev ? { ...prev, status: 'cancelled' } : prev));
+      setRecipients((prev) =>
+        prev.map((r) =>
+          r.status === 'pending'
+            ? { ...r, status: 'failed', error_message: 'Cancelled' }
+            : r,
+        ),
+      );
+    } finally {
+      setCancelling(false);
+    }
+  }
+
   async function handleDelete() {
     setDeleting(true);
     const supabase = createClient();
+    // A scheduled broadcast holds a prepaid campaign debit, and the
+    // settle reads the broadcasts row — once the row is deleted the
+    // refund can never be issued. So cancel + settle BEFORE deleting,
+    // and keep the row if the settle can't be confirmed. 'cancelled'
+    // is included so a retry after a failed settle still refunds
+    // (settle is idempotent per campaign — no double refund).
+    if (broadcast?.status === 'scheduled' || broadcast?.status === 'cancelled') {
+      if (broadcast.status === 'scheduled') {
+        // Guarded flip — if the cron claimed it in the meantime
+        // (scheduled → sending), this matches 0 rows and we bail.
+        const { data: claimed } = await supabase
+          .from('broadcasts')
+          .update({ status: 'cancelled' })
+          .eq('id', broadcastId)
+          .eq('status', 'scheduled')
+          .select('id')
+          .maybeSingle();
+        if (!claimed) {
+          setDeleting(false);
+          toast.error(t('toastCancelTooLate'));
+          return;
+        }
+      }
+      await supabase
+        .from('broadcast_recipients')
+        .update({ status: 'failed', error_message: 'Cancelled' })
+        .eq('broadcast_id', broadcastId)
+        .eq('status', 'pending');
+      const settled = await fetch('/api/wallet/broadcast', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ broadcast_id: broadcastId, action: 'settle' }),
+      }).catch(() => null);
+      if (!settled?.ok) {
+        setDeleting(false);
+        setBroadcast((prev) => (prev ? { ...prev, status: 'cancelled' } : prev));
+        toast.error(t('toastFailedDelete', { error: 'wallet refund failed — broadcast kept, try again' }));
+        return;
+      }
+    }
     // broadcast_recipients cascades on broadcasts.id (migration 001), so a
     // single delete is sufficient — the aggregate trigger in migration 003
     // is defined on broadcast_recipients but fires only on its own row
@@ -294,12 +383,23 @@ export default function BroadcastDetailPage() {
                 {tStatus(status.label)}
               </span>
             </div>
-            <div className="mt-1 flex items-center gap-3 text-sm text-muted-foreground">
+            <div className="mt-1 flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
               <span>{t('template', { name: broadcast.template_name })}</span>
               <span>-</span>
               <span>
                 {t('createdAt', { date: new Date(broadcast.created_at).toLocaleDateString() })}
               </span>
+              {broadcast.status === 'scheduled' && broadcast.scheduled_at && (
+                <>
+                  <span>-</span>
+                  <span className="inline-flex items-center gap-1 text-blue-400">
+                    <CalendarClock className="h-3.5 w-3.5" />
+                    {t('scheduledFor', {
+                      when: new Date(broadcast.scheduled_at).toLocaleString(),
+                    })}
+                  </span>
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -308,6 +408,22 @@ export default function BroadcastDetailPage() {
             "Delete Pipeline" flow. Mid-send broadcasts can't be deleted
             because orphaning in-flight Meta messages would leave the
             funnel inconsistent. */}
+        {broadcast.status === 'scheduled' && !confirmDelete && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleCancelSchedule}
+            disabled={cancelling}
+            className="border-border bg-transparent text-muted-foreground hover:bg-muted disabled:opacity-50"
+          >
+            {cancelling ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <CalendarClock className="h-3.5 w-3.5" />
+            )}
+            {t('cancelSchedule')}
+          </Button>
+        )}
         {confirmDelete ? (
           <div className="flex items-center gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-sm">
             <span className="text-red-300">{t('deletePrompt')}</span>

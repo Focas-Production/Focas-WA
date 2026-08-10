@@ -238,7 +238,15 @@ export default function BroadcastsPage() {
                   <TableRow
                     key={broadcast.id}
                     className="cursor-pointer border-border hover:bg-muted/50"
-                    onClick={() => router.push(`/broadcasts/${broadcast.id}`)}
+                    onClick={() =>
+                      router.push(
+                        // Drafts resume straight into the wizard;
+                        // everything else opens the detail page.
+                        broadcast.status === 'draft'
+                          ? `/broadcasts/new?draft=${broadcast.id}`
+                          : `/broadcasts/${broadcast.id}`,
+                      )
+                    }
                   >
                     <TableCell className="font-medium text-foreground">
                       {broadcast.name}
@@ -277,7 +285,9 @@ export default function BroadcastsPage() {
                       </span>
                     </TableCell>
                     <TableCell className="hidden text-muted-foreground sm:table-cell">
-                      {new Date(broadcast.created_at).toLocaleDateString()}
+                      {broadcast.status === 'scheduled' && broadcast.scheduled_at
+                        ? new Date(broadcast.scheduled_at).toLocaleString()
+                        : new Date(broadcast.created_at).toLocaleDateString()}
                     </TableCell>
                   </TableRow>
                 );

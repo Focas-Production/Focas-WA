@@ -14,7 +14,17 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog';
-import { ArrowLeft, Send, Loader2, Users, Save, Wallet, AlertTriangle } from 'lucide-react';
+import {
+  ArrowLeft,
+  Send,
+  Loader2,
+  Users,
+  Save,
+  Wallet,
+  AlertTriangle,
+  CalendarClock,
+  Zap,
+} from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
 interface AudienceConfig {
@@ -29,11 +39,18 @@ interface Step4Props {
   onNameChange: (name: string) => void;
   template: MessageTemplate;
   audience: AudienceConfig;
-  onSend: () => void;
+  /** Called with an ISO timestamp when scheduling, undefined for send-now. */
+  onSend: (scheduledAt?: string) => void;
   onSaveDraft?: () => void;
   onBack: () => void;
   isProcessing: boolean;
   progress: number;
+}
+
+/** Local-time value for <input type="datetime-local">, minutes precision. */
+function toDatetimeLocal(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 export function Step4ScheduleSend({
@@ -51,6 +68,19 @@ export function Step4ScheduleSend({
   const [showConfirm, setShowConfirm] = useState(false);
   const [estimatedReach, setEstimatedReach] = useState<number>(0);
   const [loadingReach, setLoadingReach] = useState(true);
+
+  // Send timing: now, or a scheduled moment delivered by the server
+  // cron (no browser needed at send time).
+  const [sendMode, setSendMode] = useState<'now' | 'schedule'>('now');
+  const [scheduleValue, setScheduleValue] = useState<string>(() =>
+    toDatetimeLocal(new Date(Date.now() + 60 * 60 * 1000)),
+  );
+  const scheduleDate = sendMode === 'schedule' ? new Date(scheduleValue) : null;
+  const scheduleInvalid =
+    sendMode === 'schedule' &&
+    (!scheduleDate ||
+      Number.isNaN(scheduleDate.getTime()) ||
+      scheduleDate.getTime() < Date.now() + 5 * 60 * 1000);
   const [walletBalancePaise, setWalletBalancePaise] = useState<number | null>(null);
   const [pricePaise, setPricePaise] = useState<number | null>(null);
 
@@ -208,6 +238,61 @@ export function Step4ScheduleSend({
         )}
       </div>
 
+      {/* When to send */}
+      <div className="rounded-xl border border-border bg-card/50 p-4">
+        <p className="mb-3 text-sm font-medium text-foreground">{t('scheduleSend.whenTitle')}</p>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <button
+            onClick={() => setSendMode('now')}
+            className={`flex items-start gap-3 rounded-xl border p-3 text-left transition-all ${
+              sendMode === 'now'
+                ? 'border-primary bg-primary/5 ring-1 ring-primary/30'
+                : 'border-border bg-card/50'
+            }`}
+          >
+            <Zap className={`mt-0.5 h-4 w-4 shrink-0 ${sendMode === 'now' ? 'text-primary' : 'text-muted-foreground'}`} />
+            <span>
+              <span className="block text-sm font-medium text-foreground">{t('scheduleSend.sendNowOption')}</span>
+              <span className="mt-0.5 block text-xs text-muted-foreground">{t('scheduleSend.sendNowDesc')}</span>
+            </span>
+          </button>
+          <button
+            onClick={() => setSendMode('schedule')}
+            className={`flex items-start gap-3 rounded-xl border p-3 text-left transition-all ${
+              sendMode === 'schedule'
+                ? 'border-primary bg-primary/5 ring-1 ring-primary/30'
+                : 'border-border bg-card/50'
+            }`}
+          >
+            <CalendarClock className={`mt-0.5 h-4 w-4 shrink-0 ${sendMode === 'schedule' ? 'text-primary' : 'text-muted-foreground'}`} />
+            <span>
+              <span className="block text-sm font-medium text-foreground">{t('scheduleSend.scheduleOption')}</span>
+              <span className="mt-0.5 block text-xs text-muted-foreground">{t('scheduleSend.scheduleDesc')}</span>
+            </span>
+          </button>
+        </div>
+
+        {sendMode === 'schedule' && (
+          <div className="mt-3">
+            <label className="mb-1 block text-xs text-muted-foreground">
+              {t('scheduleSend.scheduleAt')}
+            </label>
+            <input
+              type="datetime-local"
+              value={scheduleValue}
+              min={toDatetimeLocal(new Date(Date.now() + 5 * 60 * 1000))}
+              onChange={(e) => setScheduleValue(e.target.value)}
+              className="h-9 rounded-lg border border-border bg-muted px-2.5 text-sm text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+            />
+            {scheduleInvalid && (
+              <p className="mt-1.5 text-xs text-red-400">
+                {t('scheduleSend.scheduleTooSoon')}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* Processing overlay */}
       {isProcessing && (
         <div className="rounded-xl border border-primary/20 bg-primary/5 p-4">
@@ -255,23 +340,45 @@ export function Step4ScheduleSend({
           <DialogTrigger
             render={
               <Button
-                disabled={!name.trim() || isProcessing}
+                disabled={!name.trim() || isProcessing || scheduleInvalid}
                 className="bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               />
             }
           >
-            <Send className="h-4 w-4" />
-            {t('scheduleSend.sendNow')}
+            {sendMode === 'schedule' ? (
+              <CalendarClock className="h-4 w-4" />
+            ) : (
+              <Send className="h-4 w-4" />
+            )}
+            {sendMode === 'schedule'
+              ? t('scheduleSend.scheduleButton')
+              : t('scheduleSend.sendNow')}
           </DialogTrigger>
           <DialogContent className="border-border bg-popover sm:max-w-md">
             <DialogHeader>
-              <DialogTitle className="text-popover-foreground">Confirm Broadcast</DialogTitle>
+              <DialogTitle className="text-popover-foreground">
+                {sendMode === 'schedule'
+                  ? t('scheduleSend.confirmScheduleTitle')
+                  : 'Confirm Broadcast'}
+              </DialogTitle>
               <DialogDescription className="text-muted-foreground">
-                You are about to send this broadcast to{' '}
-                <span className="font-medium text-popover-foreground">{estimatedReach.toLocaleString()}</span>{' '}
-                contacts using the{' '}
-                <span className="font-medium text-popover-foreground">{template.name}</span> template.
-                This action cannot be undone.
+                {sendMode === 'schedule' && scheduleDate ? (
+                  <>
+                    {t('scheduleSend.confirmScheduleDesc', {
+                      count: estimatedReach.toLocaleString(),
+                      template: template.name,
+                      when: scheduleDate.toLocaleString(),
+                    })}
+                  </>
+                ) : (
+                  <>
+                    You are about to send this broadcast to{' '}
+                    <span className="font-medium text-popover-foreground">{estimatedReach.toLocaleString()}</span>{' '}
+                    contacts using the{' '}
+                    <span className="font-medium text-popover-foreground">{template.name}</span> template.
+                    This action cannot be undone.
+                  </>
+                )}
               </DialogDescription>
             </DialogHeader>
             <DialogFooter>
@@ -285,12 +392,22 @@ export function Step4ScheduleSend({
               <Button
                 onClick={() => {
                   setShowConfirm(false);
-                  onSend();
+                  onSend(
+                    sendMode === 'schedule' && scheduleDate
+                      ? scheduleDate.toISOString()
+                      : undefined,
+                  );
                 }}
                 className="bg-primary text-primary-foreground hover:bg-primary/90"
               >
-                <Send className="h-4 w-4" />
-                {t('scheduleSend.sendNow')}
+                {sendMode === 'schedule' ? (
+                  <CalendarClock className="h-4 w-4" />
+                ) : (
+                  <Send className="h-4 w-4" />
+                )}
+                {sendMode === 'schedule'
+                  ? t('scheduleSend.scheduleButton')
+                  : t('scheduleSend.sendNow')}
               </Button>
             </DialogFooter>
           </DialogContent>

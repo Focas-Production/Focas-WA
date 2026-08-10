@@ -612,6 +612,7 @@
       "sending": "Sending",
       "sent": "Sent",
       "failed": "Failed",
+      "cancelled": "Cancelled",
       "pending": "Pending",
       "delivered": "Delivered",
       "read": "Read",
@@ -655,7 +656,11 @@
         "failed": "Failed"
       },
       "toastFailedDelete": "Failed to delete: {error}",
-      "toastDeleted": "Broadcast deleted"
+      "toastDeleted": "Broadcast deleted",
+      "scheduledFor": "Scheduled for {when}",
+      "cancelSchedule": "Cancel schedule",
+      "toastCancelled": "Broadcast cancelled — unsent messages refunded to your wallet.",
+      "toastCancelTooLate": "Too late to cancel — sending has already started."
     },
     "new": {
       "title": "New Broadcast",
@@ -670,7 +675,8 @@
       "toastNotSignedIn": "Not signed in.",
       "toastNotLinked": "Your profile is not linked to an account.",
       "toastFailedDraft": "Failed to save draft: {error}",
-      "toastDraftSaved": "Draft saved"
+      "toastDraftSaved": "Draft saved",
+      "toastScheduled": "Broadcast scheduled for {when}."
     },
     "wizard": {
       "next": "Next",
@@ -769,6 +775,16 @@
         "audienceTags": "Filtered by tags",
         "audienceField": "Filtered by custom field",
         "audienceCsv": "CSV upload",
+        "whenTitle": "When to send",
+        "sendNowOption": "Send now",
+        "sendNowDesc": "Start sending immediately from this screen.",
+        "scheduleOption": "Schedule for later",
+        "scheduleDesc": "Delivered automatically by the server — no need to keep this tab open.",
+        "scheduleAt": "Send at",
+        "scheduleTooSoon": "Pick a time at least 5 minutes from now.",
+        "scheduleButton": "Schedule Broadcast",
+        "confirmScheduleTitle": "Confirm Schedule",
+        "confirmScheduleDesc": "This broadcast to {count} contacts using the {template} template will be sent automatically at {when}. The wallet is charged now; cancelling before send time refunds it.",
         "variables": "Variables:",
         "variablesMapped": "{count} mapped",
         "saveDraft": "Save as Draft",

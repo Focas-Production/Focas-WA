@@ -611,6 +611,7 @@
       "sending": "전송 중",
       "sent": "전송됨",
       "failed": "실패",
+      "cancelled": "취소됨",
       "pending": "대기 중",
       "delivered": "전달됨",
       "read": "읽음",
@@ -654,7 +655,11 @@
         "failed": "실패"
       },
       "toastFailedDelete": "삭제하지 못했습니다: {error}",
-      "toastDeleted": "브로드캐스트가 삭제되었습니다"
+      "toastDeleted": "브로드캐스트가 삭제되었습니다",
+      "scheduledFor": "{when} 예약됨",
+      "cancelSchedule": "예약 취소",
+      "toastCancelled": "브로드캐스트가 취소되었습니다 — 미발송분은 지갑으로 환불되었습니다.",
+      "toastCancelTooLate": "취소하기에는 너무 늦었습니다 — 이미 전송이 시작되었습니다."
     },
     "new": {
       "title": "새 브로드캐스트",
@@ -669,7 +674,8 @@
       "toastNotSignedIn": "로그인되어 있지 않습니다.",
       "toastNotLinked": "프로필이 계정에 연결되어 있지 않습니다.",
       "toastFailedDraft": "초안 저장 실패: {error}",
-      "toastDraftSaved": "초안이 저장되었습니다"
+      "toastDraftSaved": "초안이 저장되었습니다",
+      "toastScheduled": "{when}에 브로드캐스트가 예약되었습니다."
     },
     "wizard": {
       "next": "다음",
@@ -768,6 +774,16 @@
         "audienceTags": "태그로 필터링됨",
         "audienceField": "커스텀 필드로 필터링됨",
         "audienceCsv": "CSV 업로드",
+        "whenTitle": "전송 시점",
+        "sendNowOption": "지금 전송",
+        "sendNowDesc": "이 화면에서 즉시 전송을 시작합니다.",
+        "scheduleOption": "나중에 예약",
+        "scheduleDesc": "서버가 자동으로 전송합니다 — 탭을 열어 둘 필요가 없습니다.",
+        "scheduleAt": "전송 시각",
+        "scheduleTooSoon": "지금부터 최소 5분 이후의 시각을 선택하세요.",
+        "scheduleButton": "브로드캐스트 예약",
+        "confirmScheduleTitle": "예약 확인",
+        "confirmScheduleDesc": "{template} 템플릿으로 연락처 {count}명에게 보내는 이 브로드캐스트는 {when}에 자동 전송됩니다. 지갑은 지금 차감되며, 전송 전에 취소하면 환불됩니다.",
         "variables": "변수:",
         "variablesMapped": "{count}개 매핑됨",
         "saveDraft": "초안으로 저장",
