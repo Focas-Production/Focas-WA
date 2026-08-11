@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/automations/admin-client'
 import { resolveWalletCaller } from '@/lib/wallet/auth'
 import { META_RATES_PAISE, META_RATE_CARD_EFFECTIVE } from '@/lib/wallet/meta-rates'
+import { getApproverConfig } from '@/lib/wallet/credit-otp'
 
 /**
  * GET /api/wallet — balance + Meta rate card for the caller's account.
@@ -25,6 +26,13 @@ export async function GET() {
     return NextResponse.json({ error: 'Failed to load wallet' }, { status: 500 })
   }
 
+  // Approver gate is env-configured (WALLET_APPROVER_PHONE) — see
+  // credit-otp.ts. Identity details (name, phone tail) are for the
+  // owner-only settings UI; other members only learn whether the
+  // gate is on, never who approves.
+  const approver = getApproverConfig()
+  const isOwner = caller.role === 'owner'
+
   return NextResponse.json({
     balance_paise: Number(wallet.balance_paise ?? 0),
     currency: wallet.currency ?? 'INR',
@@ -34,5 +42,9 @@ export async function GET() {
     razorpay_configured: Boolean(
       process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET,
     ),
+    manual_credit_otp: approver.configured,
+    manual_credit_label: isOwner ? approver.name : null,
+    manual_credit_phone_hint: isOwner ? (approver.phone?.slice(-4) ?? null) : null,
+    manual_credit_phone_valid: !approver.configured || Boolean(approver.phone),
   })
 }

@@ -105,3 +105,15 @@ export function formatCompactNumber(value: number): string {
   if (v >= 1_000) return `${(v / 1_000).toFixed(1)}k`;
   return v.toFixed(0);
 }
+
+/**
+ * Integer/fractional PAISE → Indian-locale rupees, e.g. 78046 →
+ * "₹780.46". Server-safe (used in the WhatsApp approval template,
+ * where the string must match what the admin's screen shows).
+ */
+export function formatPaiseINR(paise: number): string {
+  return `₹${(paise / 100).toLocaleString("en-IN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}

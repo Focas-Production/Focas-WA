@@ -23,7 +23,10 @@ import {
   RotateCcw,
   AlertTriangle,
   Banknote,
+  ShieldCheck,
+  Download,
 } from 'lucide-react';
+import { toCsv, downloadBlob } from '@/lib/csv';
 import { toast } from 'sonner';
 import { useTranslations } from 'next-intl';
 
@@ -40,6 +43,12 @@ interface WalletInfo {
   low_balance_threshold_paise: number;
   pricing: Partial<Record<'marketing' | 'utility' | 'authentication', number>>;
   razorpay_configured: boolean;
+  /** Approver gate armed (WALLET_APPROVER_PHONE set server-side). */
+  manual_credit_otp: boolean;
+  /** Owner-only identity details; null for other roles. */
+  manual_credit_label: string | null;
+  manual_credit_phone_hint: string | null;
+  manual_credit_phone_valid: boolean;
 }
 
 interface WalletTx {
@@ -73,6 +82,19 @@ function formatRate(paise: number): string {
   }).format(paise / 100);
 }
 
+/**
+ * Local-time month boundaries for a 'YYYY-MM' picker value — local,
+ * not UTC, so the filter matches the dates the table displays
+ * (toLocaleString) instead of being offset by the timezone.
+ */
+function monthRange(month: string): { start: string; end: string } {
+  const [y, m] = month.split('-').map(Number);
+  return {
+    start: new Date(y, m - 1, 1).toISOString(),
+    end: new Date(y, m, 1).toISOString(),
+  };
+}
+
 let razorpayScriptPromise: Promise<void> | null = null;
 function loadRazorpayScript(): Promise<void> {
   if (window.Razorpay) return Promise.resolve();
@@ -104,13 +126,20 @@ export function WalletSettings() {
   const [topupBusy, setTopupBusy] = useState(false);
 
   const [manualOpen, setManualOpen] = useState(false);
+  const [manualStep, setManualStep] = useState<'form' | 'code'>('form');
   const [manualRupees, setManualRupees] = useState('');
   const [manualNote, setManualNote] = useState('');
+  const [manualCode, setManualCode] = useState('');
+  const [manualRequestId, setManualRequestId] = useState<string | null>(null);
   const [manualBusy, setManualBusy] = useState(false);
 
   const [transactions, setTransactions] = useState<WalletTx[]>([]);
   const [txLoading, setTxLoading] = useState(false);
   const [txFilter, setTxFilter] = useState<'all' | 'credit' | 'debit' | 'refund'>('all');
+  /** 'YYYY-MM' from the month picker; '' = all months. */
+  const [txMonth, setTxMonth] = useState('');
+  const [monthTotals, setMonthTotals] = useState<Record<WalletTx['type'], number> | null>(null);
+  const [exportBusy, setExportBusy] = useState(false);
   const [txHasMore, setTxHasMore] = useState(false);
   const txOffset = useRef(0);
 
@@ -139,6 +168,10 @@ export function WalletSettings() {
           .order('created_at', { ascending: false })
           .range(from, from + TX_PAGE_SIZE - 1);
         if (txFilter !== 'all') q = q.eq('type', txFilter);
+        if (txMonth) {
+          const { start, end } = monthRange(txMonth);
+          q = q.gte('created_at', start).lt('created_at', end);
+        }
         const { data, error } = await q;
         if (error) throw error;
         const rows = (data ?? []) as WalletTx[];
@@ -151,8 +184,95 @@ export function WalletSettings() {
         setTxLoading(false);
       }
     },
-    [txFilter, t],
+    [txFilter, txMonth, t],
   );
+
+  /**
+   * Month totals (debit/credit/refund) for the selected month —
+   * summed over EVERY row in the month via paged fetches, not just
+   * the visible page, so the number matches the Meta invoice.
+   */
+  const loadMonthTotals = useCallback(async () => {
+    if (!txMonth) {
+      setMonthTotals(null);
+      return;
+    }
+    try {
+      const supabase = createClient();
+      const { start, end } = monthRange(txMonth);
+      const totals: Record<WalletTx['type'], number> = { debit: 0, credit: 0, refund: 0 };
+      for (let from = 0; from < 20000; from += 1000) {
+        const { data, error } = await supabase
+          .from('wallet_transactions')
+          .select('type, amount_paise')
+          .gte('created_at', start)
+          .lt('created_at', end)
+          .range(from, from + 999);
+        if (error) throw error;
+        for (const r of data ?? []) {
+          totals[r.type as WalletTx['type']] += Number(r.amount_paise);
+        }
+        if (!data || data.length < 1000) break;
+      }
+      setMonthTotals(totals);
+    } catch {
+      setMonthTotals(null);
+    }
+  }, [txMonth]);
+
+  useEffect(() => {
+    loadMonthTotals();
+  }, [loadMonthTotals]);
+
+  /**
+   * Full statement export for the current month/type filter —
+   * ascending (statement order), amounts signed (debits negative)
+   * so a spreadsheet SUM reconciles against the closing balance.
+   */
+  async function handleExportCsv() {
+    setExportBusy(true);
+    try {
+      const supabase = createClient();
+      const rows: Omit<WalletTx, 'id'>[] = [];
+      for (let from = 0; from < 50000; from += 1000) {
+        let q = supabase
+          .from('wallet_transactions')
+          .select('type, amount_paise, balance_after_paise, category, description, created_at')
+          .order('created_at', { ascending: true })
+          .range(from, from + 999);
+        if (txFilter !== 'all') q = q.eq('type', txFilter);
+        if (txMonth) {
+          const { start, end } = monthRange(txMonth);
+          q = q.gte('created_at', start).lt('created_at', end);
+        }
+        const { data, error } = await q;
+        if (error) throw error;
+        rows.push(...((data ?? []) as Omit<WalletTx, 'id'>[]));
+        if (!data || data.length < 1000) break;
+      }
+      const header = ['Date', 'Type', 'Category', 'Description', 'Amount (INR)', 'Balance after (INR)'];
+      const body = rows.map((tx) => [
+        new Date(tx.created_at).toLocaleString('en-IN'),
+        tx.type,
+        tx.category,
+        tx.description ?? '',
+        ((tx.type === 'debit' ? -1 : 1) * (tx.amount_paise / 100)).toFixed(2),
+        (tx.balance_after_paise / 100).toFixed(2),
+      ]);
+      const suffix = [txMonth, txFilter !== 'all' ? txFilter : '']
+        .filter(Boolean)
+        .join('-');
+      downloadBlob(
+        `wallet-statement${suffix ? `-${suffix}` : ''}.csv`,
+        toCsv([header, ...body]),
+      );
+      toast.success(t('history.exported', { count: rows.length }));
+    } catch {
+      toast.error(t('history.exportFailed'));
+    } finally {
+      setExportBusy(false);
+    }
+  }
 
   useEffect(() => {
     loadWallet();
@@ -223,7 +343,23 @@ export function WalletSettings() {
     }
   }
 
-  async function handleManualCredit() {
+  function resetManualDialog(open: boolean) {
+    setManualOpen(open);
+    if (!open) {
+      setManualStep('form');
+      setManualRupees('');
+      setManualNote('');
+      setManualCode('');
+      setManualRequestId(null);
+    }
+  }
+
+  /**
+   * Gated flow, step 1: lock the amount into an approval request and
+   * WhatsApp the code to the approver. The server message names the
+   * amount + workspace, so the approver never approves blind.
+   */
+  async function handleRequestApproval() {
     const rupees = Number(manualRupees);
     if (!Number.isFinite(rupees) || rupees <= 0) {
       toast.error(t('manual.invalidAmount'));
@@ -231,7 +367,7 @@ export function WalletSettings() {
     }
     setManualBusy(true);
     try {
-      const res = await fetch('/api/wallet/manual-credit', {
+      const res = await fetch('/api/wallet/manual-credit/request', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -240,11 +376,51 @@ export function WalletSettings() {
         }),
       });
       const data = await res.json();
+      if (!res.ok) throw new Error(data.error || t('manual.otpSendFailed'));
+      setManualRequestId(data.request_id);
+      setManualStep('code');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : t('manual.otpSendFailed'));
+    } finally {
+      setManualBusy(false);
+    }
+  }
+
+  async function handleManualCredit() {
+    const gated = Boolean(info?.manual_credit_otp);
+    // The approver sees "Request ID: WCR-123456" — accept pasted
+    // "WCR-123456" too by keeping digits only.
+    const codeDigits = manualCode.replace(/\D+/g, '');
+    if (gated) {
+      if (!manualRequestId || !/^\d{6}$/.test(codeDigits)) {
+        toast.error(t('manual.approvalCodeHint'));
+        return;
+      }
+    } else {
+      const rupees = Number(manualRupees);
+      if (!Number.isFinite(rupees) || rupees <= 0) {
+        toast.error(t('manual.invalidAmount'));
+        return;
+      }
+    }
+    setManualBusy(true);
+    try {
+      const res = await fetch('/api/wallet/manual-credit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(
+          gated
+            ? { request_id: manualRequestId, approval_code: codeDigits }
+            : {
+                amount_paise: Math.round(Number(manualRupees) * 100),
+                note: manualNote,
+              },
+        ),
+      });
+      const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Manual credit failed');
       toast.success(t('manual.success'));
-      setManualOpen(false);
-      setManualRupees('');
-      setManualNote('');
+      resetManualDialog(false);
       refreshAll();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Manual credit failed');
@@ -378,6 +554,39 @@ export function WalletSettings() {
         </div>
       )}
 
+      {/* Approver gate for manual credits (owner only) — read-only:
+          the approver is configured via WALLET_APPROVER_PHONE /
+          WALLET_APPROVER_NAME in the server environment, so
+          repointing it requires server access, not a session. */}
+      {isOwner && (
+        <div className="rounded-xl border border-border bg-card/50 p-5">
+          <p className="flex items-center gap-2 text-sm font-medium text-foreground">
+            <ShieldCheck className="h-4 w-4 text-primary" />
+            {t('approver.title')}
+          </p>
+          <p className="mt-0.5 text-xs text-muted-foreground">{t('approver.desc')}</p>
+          <p className="mt-2 text-xs">
+            {info?.manual_credit_otp ? (
+              info.manual_credit_phone_valid ? (
+                <span className="text-emerald-500">
+                  {t('approver.active', {
+                    label: info.manual_credit_label ?? 'Approver',
+                    hint: info.manual_credit_phone_hint ?? '',
+                  })}
+                </span>
+              ) : (
+                <span className="text-red-400">{t('approver.invalidPhone')}</span>
+              )
+            ) : (
+              <span className="text-amber-500">{t('approver.inactive')}</span>
+            )}
+          </p>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            {t('approver.envNote')}
+          </p>
+        </div>
+      )}
+
       {/* Meta rate card (fixed, informational) */}
       <div className="rounded-xl border border-border bg-card/50 p-5">
         <p className="text-sm font-medium text-foreground">{t('pricing.title')}</p>
@@ -404,7 +613,7 @@ export function WalletSettings() {
       <div className="rounded-xl border border-border bg-card/50 p-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="text-sm font-medium text-foreground">{t('history.title')}</p>
-          <div className="flex items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
             {(['all', 'credit', 'debit', 'refund'] as const).map((f) => (
               <button
                 key={f}
@@ -418,8 +627,71 @@ export function WalletSettings() {
                 {t(`history.filter.${f}`)}
               </button>
             ))}
+            <input
+              type="month"
+              value={txMonth}
+              max={new Date().toISOString().slice(0, 7)}
+              onChange={(e) => setTxMonth(e.target.value)}
+              aria-label={t('history.monthFilter')}
+              className="h-7 rounded-md border border-border bg-muted px-2 text-xs text-foreground [color-scheme:light] dark:[color-scheme:dark]"
+            />
+            {txMonth && (
+              <button
+                onClick={() => setTxMonth('')}
+                className="rounded-full border border-border bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground"
+              >
+                {t('history.allMonths')}
+              </button>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleExportCsv}
+              disabled={exportBusy}
+              className="h-7 border-border text-muted-foreground"
+            >
+              {exportBusy ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Download className="h-3.5 w-3.5" />
+              )}
+              {t('history.export')}
+            </Button>
           </div>
         </div>
+
+        {/* Month totals — summed over the whole month, not the page */}
+        {txMonth && monthTotals && (
+          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="rounded-lg border border-border bg-muted/50 px-3 py-2">
+              <p className="text-xs text-muted-foreground">{t('history.totalDebits')}</p>
+              <p className="mt-0.5 text-sm font-semibold text-red-400">
+                −{formatMoney(monthTotals.debit, currency)}
+              </p>
+            </div>
+            <div className="rounded-lg border border-border bg-muted/50 px-3 py-2">
+              <p className="text-xs text-muted-foreground">{t('history.totalCredits')}</p>
+              <p className="mt-0.5 text-sm font-semibold text-emerald-500">
+                +{formatMoney(monthTotals.credit, currency)}
+              </p>
+            </div>
+            <div className="rounded-lg border border-border bg-muted/50 px-3 py-2">
+              <p className="text-xs text-muted-foreground">{t('history.totalRefunds')}</p>
+              <p className="mt-0.5 text-sm font-semibold text-amber-500">
+                +{formatMoney(monthTotals.refund, currency)}
+              </p>
+            </div>
+            <div className="rounded-lg border border-border bg-muted/50 px-3 py-2">
+              <p className="text-xs text-muted-foreground">{t('history.net')}</p>
+              <p className="mt-0.5 text-sm font-semibold text-foreground">
+                {formatMoney(
+                  monthTotals.credit + monthTotals.refund - monthTotals.debit,
+                  currency,
+                )}
+              </p>
+            </div>
+          </div>
+        )}
 
         {transactions.length === 0 && !txLoading ? (
           <p className="mt-4 text-sm text-muted-foreground">{t('history.empty')}</p>
@@ -485,64 +757,116 @@ export function WalletSettings() {
         </div>
       </div>
 
-      {/* Manual credit dialog */}
-      <Dialog open={manualOpen} onOpenChange={setManualOpen}>
+      {/* Manual credit dialog — two-step when an approver WhatsApp
+          number is set: request approval (OTP sent) → enter code. */}
+      <Dialog open={manualOpen} onOpenChange={resetManualDialog}>
         <DialogContent className="border-border bg-popover sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="text-popover-foreground">
               {t('manual.title')}
             </DialogTitle>
             <DialogDescription className="text-muted-foreground">
-              {t('manual.desc')}
+              {manualStep === 'code'
+                ? t('manual.codeStepDesc', {
+                    label: info?.manual_credit_label ?? 'Approver',
+                    hint: info?.manual_credit_phone_hint ?? '',
+                  })
+                : t('manual.desc')}
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-3">
-            <div>
-              <label className="mb-1 block text-xs text-muted-foreground">
-                {t('manual.amount')}
-              </label>
-              <div className="flex items-center gap-1.5">
-                <span className="text-sm text-muted-foreground">₹</span>
+
+          {manualStep === 'form' ? (
+            <div className="space-y-3">
+              <div>
+                <label className="mb-1 block text-xs text-muted-foreground">
+                  {t('manual.amount')}
+                </label>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-sm text-muted-foreground">₹</span>
+                  <Input
+                    type="number"
+                    min={1}
+                    value={manualRupees}
+                    onChange={(e) => setManualRupees(e.target.value)}
+                    className="border-border bg-muted text-foreground"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-muted-foreground">
+                  {t('manual.note')}
+                </label>
                 <Input
-                  type="number"
-                  min={1}
-                  value={manualRupees}
-                  onChange={(e) => setManualRupees(e.target.value)}
-                  className="border-border bg-muted text-foreground"
+                  value={manualNote}
+                  onChange={(e) => setManualNote(e.target.value)}
+                  placeholder={t('manual.notePlaceholder')}
+                  className="border-border bg-muted text-foreground placeholder:text-muted-foreground"
                 />
               </div>
+              {info?.manual_credit_otp && (
+                <p className="text-[11px] text-muted-foreground">
+                  {t('manual.gatedNotice', {
+                    label: info.manual_credit_label ?? 'Approver',
+                  })}
+                </p>
+              )}
             </div>
+          ) : (
             <div>
               <label className="mb-1 block text-xs text-muted-foreground">
-                {t('manual.note')}
+                {t('manual.approvalCode', {
+                  label: info?.manual_credit_label ?? 'Approver',
+                })}
               </label>
               <Input
-                value={manualNote}
-                onChange={(e) => setManualNote(e.target.value)}
-                placeholder={t('manual.notePlaceholder')}
-                className="border-border bg-muted text-foreground placeholder:text-muted-foreground"
+                value={manualCode}
+                onChange={(e) => setManualCode(e.target.value)}
+                inputMode="numeric"
+                maxLength={12}
+                placeholder={t('manual.approvalCodePlaceholder')}
+                className="border-border bg-muted font-mono tracking-widest text-foreground placeholder:text-muted-foreground"
               />
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {t('manual.approvalCodeHint')}
+              </p>
             </div>
-          </div>
+          )}
+
           <DialogFooter>
             <Button
               variant="outline"
-              onClick={() => setManualOpen(false)}
+              onClick={() => resetManualDialog(false)}
               className="border-border text-muted-foreground"
             >
               {t('manual.cancel')}
             </Button>
-            <Button
-              onClick={handleManualCredit}
-              disabled={manualBusy}
-              className="bg-primary text-primary-foreground hover:bg-primary/90"
-            >
-              {manualBusy && <Loader2 className="h-4 w-4 animate-spin" />}
-              {t('manual.confirm')}
-            </Button>
+            {manualStep === 'form' && info?.manual_credit_otp ? (
+              <Button
+                onClick={handleRequestApproval}
+                disabled={manualBusy}
+                className="bg-primary text-primary-foreground hover:bg-primary/90"
+              >
+                {manualBusy && <Loader2 className="h-4 w-4 animate-spin" />}
+                {t('manual.requestApproval')}
+              </Button>
+            ) : (
+              <Button
+                onClick={handleManualCredit}
+                disabled={
+                  manualBusy ||
+                  (manualStep === 'code' &&
+                    !/^\d{6}$/.test(manualCode.replace(/\D+/g, '')))
+                }
+                className="bg-primary text-primary-foreground hover:bg-primary/90"
+              >
+                {manualBusy && <Loader2 className="h-4 w-4 animate-spin" />}
+                {t('manual.confirm')}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
     </div>
   );
 }

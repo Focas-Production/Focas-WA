@@ -40,6 +40,7 @@ import {
   getRecipientStatus,
 } from '@/lib/broadcast-status';
 import { useTranslations } from 'next-intl';
+import { toCsv, downloadBlob } from '@/lib/csv';
 
 interface StatCardProps {
   label: string;
@@ -122,26 +123,6 @@ const RECIPIENT_STATUSES: readonly RecipientStatus[] = [
   'failed',
 ];
 
-/**
- * CSV export helper — RFC 4180 quoting. Quote every field so
- * commas/newlines/quotes round-trip cleanly.
- */
-function toCsv(rows: string[][]): string {
-  const escape = (v: string) => `"${v.replace(/"/g, '""')}"`;
-  return rows.map((r) => r.map(escape).join(',')).join('\n');
-}
-
-function downloadBlob(filename: string, content: string) {
-  const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
 
 export default function BroadcastDetailPage() {
   const params = useParams();
