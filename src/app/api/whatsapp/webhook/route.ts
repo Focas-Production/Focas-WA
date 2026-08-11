@@ -1025,12 +1025,44 @@ async function processMessage(
   // when the account has no matching endpoint and never throws.
   // (conversation.created is emitted earlier, right after the thread is
   // opened.)
+  // Payload is deliberately self-contained (WATI-style): phone, sender
+  // name, timestamp, media, and the STRUCTURED interactive reply
+  // (id + title + description) ride along, so a bot subscriber can act
+  // without a follow-up API call to resolve the contact or having to
+  // match list rows by title. The original minimal fields stay for
+  // backward compatibility with existing subscribers.
+  const interactiveReply =
+    message.interactive?.list_reply ?? message.interactive?.button_reply ?? null
   await dispatchWebhookEvent(supabaseAdmin(), accountId, 'message.received', {
     conversation_id: conversation.id,
     contact_id: contactRecord.id,
     whatsapp_message_id: message.id,
     content_type: contentType,
     text: contentText,
+    // WATI-style enrichment ↓
+    /** E.164-normalized sender phone (same value stored on the contact). */
+    phone: senderPhone,
+    /** Digits-only sender id, WATI's `waId`. */
+    wa_id: senderPhone.replace(/\D/g, ''),
+    /** WhatsApp profile name as sent by Meta. */
+    sender_name: contactName,
+    /** Contact row's (possibly user-edited) name. */
+    contact_name: contactRecord.name ?? contactName,
+    timestamp: new Date(parseInt(message.timestamp) * 1000).toISOString(),
+    media_url: mediaUrl,
+    /** Structured interactive tap — { id, title, description? } — for
+     *  list rows and reply buttons alike; null for plain messages. */
+    interactive_reply: interactiveReply
+      ? {
+          type: message.interactive?.type ?? null,
+          id: interactiveReply.id,
+          title: interactiveReply.title,
+          description:
+            (interactiveReply as { description?: string }).description ?? null,
+        }
+      : null,
+    /** Meta id of the message this one swipe-replied to, if any. */
+    reply_to_whatsapp_message_id: message.context?.id ?? null,
   })
 }
 

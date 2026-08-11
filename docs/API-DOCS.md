@@ -297,17 +297,37 @@ Re-enabling with `{"is_active": true}` also resets the failure counter.
     "contact_id": "…",
     "whatsapp_message_id": "wamid.…",
     "content_type": "text",
-    "text": "MCQ"
+    "text": "MCQ",
+    "phone": "+917305504500",
+    "wa_id": "917305504500",
+    "sender_name": "Dinesh S",
+    "contact_name": "Dinesh S",
+    "timestamp": "2026-08-07T12:49:07.000Z",
+    "media_url": null,
+    "interactive_reply": null,
+    "reply_to_whatsapp_message_id": null
   }
 }
 ```
 
-> Note `data` carries **`contact_id`, not the phone number**. Look the
-> phone up with `GET /api/v1/contacts/{id}` and cache it — that's what
-> `wacrmWebhookController.js` does.
+`data` is self-contained (WATI-style) — the sender's `phone` / `wa_id`
+and names ride on every event, so no follow-up contact lookup is
+needed.
 
-For an interactive tap, `content_type` is `interactive` and `text` is
-the tapped row's **title**.
+For an interactive tap, `content_type` is `interactive`, `text` is the
+tapped row's **title**, and `interactive_reply` carries the structured
+tap so you can match by **row id** instead:
+
+```json
+"interactive_reply": {
+  "type": "list_reply",
+  "id": "row_generate_more",
+  "title": "Generate More",
+  "description": null
+}
+```
+
+For media messages, `media_url` is a proxy URL serving the file.
 
 ### Verifying the signature
 
