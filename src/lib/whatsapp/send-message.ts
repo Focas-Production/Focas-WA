@@ -51,6 +51,7 @@ import {
   refundTemplateCharge,
   WalletError,
 } from '@/lib/wallet/wallet';
+import { dispatchWebhookEvent } from '@/lib/webhooks/deliver';
 
 export const MEDIA_KINDS = ['image', 'video', 'document', 'audio'] as const;
 export const VALID_MESSAGE_TYPES = [
@@ -532,6 +533,32 @@ export async function sendMessageToConversation(
       updated_at: new Date().toISOString(),
     })
     .eq('id', conversationId);
+
+  // Webhook fan-out — template sends and session sends are distinct
+  // events (WATI-style). Awaited but timeout-bounded in the deliverer.
+  if (messageType === 'template') {
+    await dispatchWebhookEvent(supabaseAdmin(), accountId, 'template.message.sent', {
+      conversation_id: conversationId,
+      contact_id: contact.id,
+      message_id: messageRecord.id,
+      whatsapp_message_id: waMessageId,
+      template_name: templateName,
+      language: templateLanguage || 'en_US',
+      phone: workingPhone,
+      sender_type: 'agent',
+    });
+  } else {
+    await dispatchWebhookEvent(supabaseAdmin(), accountId, 'message.sent', {
+      conversation_id: conversationId,
+      contact_id: contact.id,
+      message_id: messageRecord.id,
+      whatsapp_message_id: waMessageId,
+      content_type: messageType,
+      text: interactiveBody ?? contentText ?? null,
+      phone: workingPhone,
+      sender_type: 'agent',
+    });
+  }
 
   // Pause any active Flow run for this contact — the agent stepping in
   // is the strongest "yield, human is here" signal. Best-effort.

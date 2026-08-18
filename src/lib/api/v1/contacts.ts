@@ -13,6 +13,7 @@ import { findExistingContact, isUniqueViolation } from '@/lib/contacts/dedupe';
 import { resolveImportTagIds } from '@/lib/contacts/resolve-import-tags';
 import { addContactTagAndDispatch } from '@/lib/contacts/tag-events';
 import { sanitizePhoneForMeta, isValidE164 } from '@/lib/whatsapp/phone-utils';
+import { dispatchWebhookEvent } from '@/lib/webhooks/deliver';
 
 /** Row select that embeds the contact's tags for serialization. */
 export const CONTACT_SELECT = '*, contact_tags(tags(*))';
@@ -147,6 +148,13 @@ export async function findOrCreateContact(
     console.error('[api/v1/contacts] create error:', error);
     throw new ContactError('Failed to create contact', 500);
   }
+
+  await dispatchWebhookEvent(db, accountId, 'contact.created', {
+    contact_id: created.id,
+    phone: sanitized,
+    name: input.name ?? sanitized,
+    source: 'api',
+  });
 
   return { id: created.id, created: true };
 }

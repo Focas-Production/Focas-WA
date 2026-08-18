@@ -12,6 +12,7 @@ import {
   isRecipientNotAllowedError,
 } from '@/lib/whatsapp/phone-utils'
 import { supabaseAdmin } from './admin-client'
+import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import {
   getTemplateCharge,
   chargeTemplateSend,
@@ -257,6 +258,28 @@ async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: str
       updated_at: new Date().toISOString(),
     })
     .eq('id', input.conversationId)
+
+  // Webhook fan-out — bot sends fire the same events as agent sends.
+  if (input.kind === 'template') {
+    await dispatchWebhookEvent(db, input.accountId, 'template.message.sent', {
+      conversation_id: input.conversationId,
+      contact_id: contact.id,
+      whatsapp_message_id: waMessageId,
+      template_name: input.templateName,
+      phone: workingPhone,
+      sender_type: 'bot',
+    })
+  } else {
+    await dispatchWebhookEvent(db, input.accountId, 'message.sent', {
+      conversation_id: input.conversationId,
+      contact_id: contact.id,
+      whatsapp_message_id: waMessageId,
+      content_type: 'text',
+      text: input.text,
+      phone: workingPhone,
+      sender_type: 'bot',
+    })
+  }
 
   return { whatsapp_message_id: waMessageId }
 }

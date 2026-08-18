@@ -269,8 +269,10 @@ curl -X POST "$WACRM_BASE_URL/api/v1/webhooks" \
       }'
 ```
 
-Available events: `message.received`, `message.status_updated`,
-`conversation.created`. The URL must be `https://` and publicly
+Available events: `message.received`, `message.sent`,
+`template.message.sent`, `template.message.failed`,
+`message.status_updated`, `conversation.created`, `contact.created`.
+The URL must be `https://` and publicly
 resolvable (localhost and private ranges are refused).
 
 ### Update / disable

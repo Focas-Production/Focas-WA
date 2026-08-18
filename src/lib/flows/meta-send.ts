@@ -16,6 +16,7 @@ import {
   isRecipientNotAllowedError,
 } from '@/lib/whatsapp/phone-utils'
 import { supabaseAdmin } from './admin-client'
+import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 
 // ------------------------------------------------------------
 // Flows-side Meta sender (interactive variants).
@@ -147,6 +148,15 @@ export async function engineSendText(
     })
     .eq('id', args.conversationId)
 
+  await dispatchWebhookEvent(db, args.accountId, 'message.sent', {
+    conversation_id: args.conversationId,
+    contact_id: args.contactId,
+    whatsapp_message_id: waMessageId,
+    content_type: 'text',
+    text: args.text,
+    sender_type: 'bot',
+  })
+
   return { whatsapp_message_id: waMessageId }
 }
 
@@ -263,6 +273,16 @@ export async function engineSendMedia(
       updated_at: new Date().toISOString(),
     })
     .eq('id', args.conversationId)
+
+  await dispatchWebhookEvent(db, args.accountId, 'message.sent', {
+    conversation_id: args.conversationId,
+    contact_id: args.contactId,
+    whatsapp_message_id: waMessageId,
+    content_type: args.kind,
+    text: args.caption ?? null,
+    media_url: args.link,
+    sender_type: 'bot',
+  })
 
   return { whatsapp_message_id: waMessageId }
 }
@@ -456,6 +476,15 @@ async function sendInteractiveViaMeta(
       updated_at: new Date().toISOString(),
     })
     .eq('id', input.conversationId)
+
+  await dispatchWebhookEvent(db, input.accountId, 'message.sent', {
+    conversation_id: input.conversationId,
+    contact_id: input.contactId,
+    whatsapp_message_id: waMessageId,
+    content_type: 'interactive',
+    text: input.bodyText,
+    sender_type: 'bot',
+  })
 
   return { whatsapp_message_id: waMessageId }
 }

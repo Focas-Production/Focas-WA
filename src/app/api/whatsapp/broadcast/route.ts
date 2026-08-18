@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { supabaseAdmin } from '@/lib/flows/admin-client'
+import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import { sendTemplateMessage } from '@/lib/whatsapp/meta-api'
 import { decrypt } from '@/lib/whatsapp/encryption'
 import type { SendTimeParams } from '@/lib/whatsapp/template-send-builder'
@@ -306,6 +308,15 @@ export async function POST(request: Request) {
           whatsapp_message_id: sentMessageId,
         })
         sentCount++
+        // Fire-and-forget: one event per recipient (WATI-style), so a
+        // slow subscriber must never pace the campaign loop itself.
+        void dispatchWebhookEvent(supabaseAdmin(), accountId, 'template.message.sent', {
+          whatsapp_message_id: sentMessageId,
+          template_name,
+          language: template_language || 'en_US',
+          phone: recipient.phone,
+          source: 'broadcast',
+        })
       } else {
         if (chargeRef) await refundTemplateCharge(chargeRef, 'Meta send failed')
         console.error(
@@ -318,6 +329,12 @@ export async function POST(request: Request) {
           error: lastError || 'Unknown error',
         })
         failedCount++
+        void dispatchWebhookEvent(supabaseAdmin(), accountId, 'template.message.failed', {
+          template_name,
+          phone: recipient.phone,
+          error: lastError || 'Unknown error',
+          source: 'broadcast',
+        })
       }
     }
 

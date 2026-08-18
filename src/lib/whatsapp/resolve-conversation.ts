@@ -24,6 +24,7 @@ import { findExistingContact, isUniqueViolation } from '@/lib/contacts/dedupe';
 import { sanitizePhoneForMeta, isValidE164 } from '@/lib/whatsapp/phone-utils';
 import { SendMessageError } from '@/lib/whatsapp/send-message';
 import { resolveAuditUserId, ContactError } from '@/lib/api/v1/contacts';
+import { dispatchWebhookEvent } from '@/lib/webhooks/deliver';
 
 export interface ResolvedConversation {
   conversationId: string;
@@ -134,6 +135,15 @@ export async function resolveConversationByPhone(
       contactId = created.id;
       contactCreated = true;
     }
+  }
+
+  if (contactCreated) {
+    await dispatchWebhookEvent(db, accountId, 'contact.created', {
+      contact_id: contactId,
+      phone: sanitized,
+      name: name || sanitized,
+      source: 'api',
+    });
   }
 
   // ---- conversation -------------------------------------------

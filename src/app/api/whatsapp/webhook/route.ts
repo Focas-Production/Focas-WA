@@ -491,7 +491,7 @@ async function handleStatusUpdate(status: {
   //    the owning account for delivery.
   const { data: msgRow } = await supabaseAdmin()
     .from('messages')
-    .select('conversation_id, conversations(account_id)')
+    .select('conversation_id, template_name, conversations(account_id)')
     .eq('message_id', status.id)
     .limit(1)
     .maybeSingle()
@@ -510,6 +510,24 @@ async function handleStatusUpdate(status: {
           status: status.status,
         }
       )
+
+      // WATI-parity extra: a template that Meta could not deliver also
+      // fires its own failure event, with the reason attached.
+      if (status.status === 'failed' && msgRow.template_name) {
+        await dispatchWebhookEvent(
+          supabaseAdmin(),
+          accountId,
+          'template.message.failed',
+          {
+            whatsapp_message_id: status.id,
+            conversation_id: msgRow.conversation_id,
+            template_name: msgRow.template_name,
+            error:
+              statusErrorText(status.errors) ??
+              'Delivery failed (no reason given by Meta)',
+          }
+        )
+      }
     }
   }
 }
@@ -784,6 +802,18 @@ async function processMessage(
   )
   if (!contactOutcome) return
   const contactRecord = contactOutcome.contact
+
+  // A first-ever message from this number just created the contact —
+  // emit before conversation.created so subscribers see the entity
+  // exist before anything references it.
+  if (contactOutcome.wasCreated) {
+    await dispatchWebhookEvent(supabaseAdmin(), accountId, 'contact.created', {
+      contact_id: contactRecord.id,
+      phone: contactRecord.phone,
+      name: contactRecord.name,
+      source: 'inbound',
+    })
+  }
 
   // Find or create conversation
   const convResult = await findOrCreateConversation(

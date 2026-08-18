@@ -291,9 +291,13 @@ things happen in your account. **Migration required:** apply
 
 | Event                    | Fires when                                        |
 | ------------------------ | ------------------------------------------------- |
-| `message.received`       | An inbound message arrives from a contact         |
-| `message.status_updated` | A message you sent changed delivery status        |
-| `conversation.created`   | A new conversation is opened for a contact        |
+| `message.received`        | An inbound message arrives from a contact                       |
+| `message.sent`            | An outbound session message was sent (agent or bot)             |
+| `template.message.sent`   | An outbound template message was sent (inbox/automation/broadcast) |
+| `template.message.failed` | A template message failed to send or to be delivered            |
+| `message.status_updated`  | A message you sent changed delivery status                      |
+| `conversation.created`    | A new conversation is opened for a contact                      |
+| `contact.created`         | A new contact was created (inbound message or API)              |
 
 ### Managing endpoints
 

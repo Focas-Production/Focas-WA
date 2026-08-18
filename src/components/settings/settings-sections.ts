@@ -6,10 +6,12 @@ import {
   Palette,
   PlugZap,
   Shield,
+  ShoppingBag,
   Tags,
   User,
   UsersRound,
   Wallet,
+  Webhook,
   Zap,
   type LucideIcon,
 } from 'lucide-react';
@@ -35,6 +37,8 @@ export const SETTINGS_SECTIONS = [
   'wallet',
   'members',
   'api',
+  'webhooks',
+  'shopify',
 ] as const;
 
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
@@ -62,6 +66,8 @@ export const SECTION_META: Record<SettingsSection, SectionMeta> = {
   wallet: { id: 'wallet', label: 'Wallet', icon: Wallet, group: 'workspace' },
   members: { id: 'members', label: 'Team members', icon: UsersRound, group: 'workspace' },
   api: { id: 'api', label: 'API keys', icon: KeyRound, group: 'workspace' },
+  webhooks: { id: 'webhooks', label: 'Webhooks', icon: Webhook, group: 'workspace' },
+  shopify: { id: 'shopify', label: 'Shopify', icon: ShoppingBag, group: 'workspace' },
 };
 
 export const RAIL_GROUPS: { label: string | null; group: SectionMeta['group'] }[] = [
