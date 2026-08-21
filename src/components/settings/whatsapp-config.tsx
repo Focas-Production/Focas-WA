@@ -119,6 +119,8 @@ export function WhatsAppConfig() {
   type RegistrationProbe = {
     live: boolean;
     checks: Record<string, boolean | null>;
+    coexistence?: boolean;
+    platform_type?: string | null;
     errors?: string[];
     last_registration_error?: string | null;
     registered_at?: string | null;
@@ -750,6 +752,19 @@ export function WhatsAppConfig() {
                     </li>
                   ))}
                 </ul>
+                <p className="pt-1 text-muted-foreground">
+                  Coexistence (WhatsApp Business app):{' '}
+                  {registrationProbe.coexistence ? (
+                    <span className="text-emerald-400">
+                      Yes — this number is also active in the WhatsApp Business app
+                      {registrationProbe.platform_type
+                        ? ` (${registrationProbe.platform_type})`
+                        : ''}
+                    </span>
+                  ) : (
+                    <span>No — Cloud API only</span>
+                  )}
+                </p>
                 {(registrationProbe.errors ?? []).length > 0 && (
                   <ul className="pt-1 space-y-0.5 text-red-300">
                     {registrationProbe.errors?.map((e, i) => (

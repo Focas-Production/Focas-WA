@@ -296,7 +296,18 @@ export async function POST(request: Request) {
     // is not a failure, just an incomplete-but-valid save.
     let registrationSkipped = false
 
-    const needsRegistration = !sameNumber || (typeof pin === 'string' && pin.length > 0)
+    // Coexistence numbers (also active in the WhatsApp Business app,
+    // `is_on_biz_app: true`) are registered by Meta's QR onboarding and
+    // must NOT be re-/register-ed — doing so with a PIN can sever the
+    // phone-app link. Treat them as registered and skip the PIN step
+    // entirely, whether or not the user typed one.
+    const coexistence = phoneInfo?.is_on_biz_app === true
+    if (coexistence && registeredAt == null) {
+      registeredAt = new Date().toISOString()
+    }
+
+    const needsRegistration =
+      !coexistence && (!sameNumber || (typeof pin === 'string' && pin.length > 0))
     if (needsRegistration) {
       if (!pin) {
         // No PIN provided. Meta TEST numbers (Developer Console) are

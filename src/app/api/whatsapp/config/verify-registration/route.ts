@@ -98,14 +98,21 @@ export async function GET() {
     locally_marked_registered: config.registered_at != null,
   }
   const errors: string[] = []
+  // Coexistence: Meta's `is_on_biz_app` flag means the number is also
+  // active in the WhatsApp Business app and was registered by the QR
+  // onboarding itself — so a null local registered_at is not a gap.
+  let coexistence = false
+  let platformType: string | null = null
 
   // 1. Phone metadata
   try {
-    await verifyPhoneNumber({
+    const phoneInfo = await verifyPhoneNumber({
       phoneNumberId: config.phone_number_id,
       accessToken,
     })
     checks.phone_metadata_ok = true
+    coexistence = phoneInfo.is_on_biz_app === true
+    platformType = phoneInfo.platform_type ?? null
   } catch (err) {
     errors.push(
       `Phone metadata check failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -143,11 +150,13 @@ export async function GET() {
   const live =
     checks.phone_metadata_ok &&
     (checks.waba_subscribed_to_app ?? false) &&
-    checks.locally_marked_registered
+    (checks.locally_marked_registered || coexistence)
 
   return NextResponse.json({
     live,
     checks,
+    coexistence,
+    platform_type: platformType,
     errors,
     last_registration_error: config.last_registration_error ?? null,
     registered_at: config.registered_at ?? null,
