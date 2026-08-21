@@ -5,9 +5,13 @@ Signup** flow instead of pasting API credentials by hand — including
 **coexistence**, where the number keeps working in the WhatsApp
 Business app on a phone while also running on the Cloud API.
 
-> **Status:** ships behind two env vars. With them unset the
-> "Launch Embedded Signup" button renders disabled and nothing else
-> changes — the manual credentials form is unaffected.
+> **Status:** ships behind two env vars. With them unset the *Launch
+> Embedded Signup* button renders disabled and nothing else changes —
+> the manual credentials form is unaffected.
+>
+> Implements Meta's **Embedded Signup v4** (configuration-driven). The
+> older `featureType`-based coexistence flow (v2/v3) is deprecated by
+> Meta on **15 October 2026**.
 
 ## Why coexistence
 
@@ -27,12 +31,29 @@ Coexistence removes the trade-off. The number stays live in the app
 
 ## What the user sees
 
-**Settings → WhatsApp → Connect with Embedded Signup (coexistence)** →
-**Launch Embedded Signup**. Meta's popup opens; choosing *use your
-existing WhatsApp Business app number* shows a QR code, the business
-scans it from the WhatsApp Business app, approves sharing chat
-history, and the connection is saved. No Phone Number ID, WABA ID or
-access token is typed anywhere.
+**Settings → WhatsApp → Connect with Embedded Signup → Launch Embedded
+Signup**. Meta's popup opens and — because the Facebook Login for
+Business configuration has *Onboard numbers from the WhatsApp Business
+app* enabled — offers both paths:
+
+- **Existing WhatsApp Business app number** (coexistence) — the popup
+  shows a QR code, the business scans it from the WhatsApp Business
+  app, approves sharing chat history, and the connection is saved.
+  The number is registered by the onboarding itself.
+- **New number** — Meta OTP-verifies the number in the popup. Because
+  a fresh Cloud API number must still be `/register`-ed with a
+  two-step PIN, the card has an optional *6-digit PIN* field: fill it
+  before launching and wacrm registers the number immediately; leave
+  it blank and the number is saved as connected-but-not-registered,
+  with the existing "Not registered" banner guiding you to add a PIN
+  in the credentials form.
+
+wacrm tells the two apart server-side from Meta's `is_on_biz_app`
+flag on the phone number (and the session event name
+`FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING`), so a PIN is never applied
+to a coexistence number.
+
+No Phone Number ID, WABA ID or access token is typed anywhere.
 
 Both paths write the same `whatsapp_config` row, so everything
 downstream (inbox, templates, broadcasts, flows) is identical
@@ -48,7 +69,9 @@ On the Meta app that owns your webhook:
 | --- | --- |
 | Business verification complete | Business Settings → Business info |
 | **Advanced Access** for `whatsapp_business_messaging` and `whatsapp_business_management` | App Review → Permissions and features |
-| **Facebook Login for Business** product added, with a Configuration of type *WhatsApp Embedded Signup* | App Dashboard → Facebook Login for Business → Configurations |
+| **Facebook Login for Business** product added; *Login with the JavaScript SDK* on and your HTTPS origin in *Allowed Domains for the JavaScript SDK* | App Dashboard → Facebook Login for Business → Settings |
+| **WhatsApp use case** attached to the app (without it the configuration wizard only offers the *General* variation) | App Dashboard → Use cases |
+| A Configuration of type *WhatsApp Embedded Signup*, token type *Business integration system user access token*, both WhatsApp permissions, and the *Onboard numbers from the WhatsApp Business app* option enabled | App Dashboard → Facebook Login for Business → Configurations |
 | Webhook fields `messages` **and** `smb_message_echoes` subscribed | App Dashboard → WhatsApp → Configuration |
 
 Advanced Access is the long pole — it goes through App Review and can
@@ -83,16 +106,19 @@ restart** after setting them, or the button stays disabled.
 ```
 Browser                        wacrm server                  Meta
   │  FB.login(config_id,           │                           │
-  │    featureType:                │                           │
-  │    whatsapp_business_app_      │                           │
-  │    onboarding)  ───────────────┼──────────────────────────▶│
-  │                                │        QR scan + consent  │
-  │  ◀── code + WA_EMBEDDED_SIGNUP session info (phone id, waba id)
+  │    extras: { setup: {} })  ────┼──────────────────────────▶│
+  │                                │   QR scan / OTP + consent │
+  │  ◀── code + WA_EMBEDDED_SIGNUP session info               │
+  │      (phone id, waba id, event FINISH |                    │
+  │       FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING)             │
   │                                │                           │
   │  POST /api/whatsapp/           │                           │
   │  embedded-signup ─────────────▶│  code+secret → token ────▶│
-  │                                │  verify phone number  ───▶│
+  │                                │  verify phone number      │
+  │                                │   (+ is_on_biz_app)  ────▶│
   │                                │  subscribe WABA to app ──▶│
+  │                                │  /register w/ PIN (new    │
+  │                                │    numbers only) ────────▶│
   │                                │  encrypt + store config   │
   │  ◀──────────── { success } ────│                           │
 ```
@@ -100,19 +126,26 @@ Browser                        wacrm server                  Meta
 Implementation:
 
 - **`src/components/settings/whatsapp-config.tsx`** — loads the
-  Facebook JS SDK on demand, launches `FB.login` with
-  `featureType: 'whatsapp_business_app_onboarding'`, and listens for
+  Facebook JS SDK on demand, launches `FB.login` with the v4
+  parameters (`config_id`, `response_type: 'code'`,
+  `extras: { setup: {} }` — no `featureType`/`sessionInfoVersion`),
+  and listens for
   `WA_EMBEDDED_SIGNUP` `postMessage` events (origin-checked against
   `facebook.com`) to capture `phone_number_id` and `waba_id`.
 - **`src/app/api/whatsapp/embedded-signup/route.ts`** — exchanges the
   OAuth `code` for a long-lived business-integration token using
   `META_APP_SECRET` (server-side only), verifies the phone number,
   subscribes the WABA to the app, then stores the credentials
-  AES-256-GCM-encrypted in `whatsapp_config`.
+  AES-256-GCM-encrypted in `whatsapp_config`. For a new number it
+  also calls `/register` with the user's PIN when one was supplied; a
+  registration failure is stored in `last_registration_error` (row
+  saved as `disconnected`), and a missing PIN leaves `registered_at`
+  null, so the "Not registered" banner and the credentials form can
+  finish registration.
 
-No `/register` call is made. Coexistence numbers are registered by the
-QR onboarding itself, and re-registering with a PIN would risk
-severing the phone-app link.
+For coexistence numbers (`is_on_biz_app: true`) **no `/register` call
+is made**. Those numbers are registered by the QR onboarding itself,
+and re-registering with a PIN would risk severing the phone-app link.
 
 ## Message echoes
 

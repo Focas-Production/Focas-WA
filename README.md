@@ -26,13 +26,12 @@ clone or fork it to run your own CRM.
 - **Shared inbox** on the official WhatsApp Business API — multiple
   agents working one number, per-conversation assignment, status, and
   notes.
-- **Guided onboarding with coexistence** _(⏳ pending Meta App Review)_
-  — connect a number through Meta's Embedded Signup (QR scan) instead
-  of pasting credentials, and keep it working in the WhatsApp Business
-  app on a phone while the API runs alongside. Code is shipped but the
-  button stays disabled until Advanced Access is approved and the
-  config id is set — see
-  [Enabling coexistence](#enabling-coexistence-pending-app-review) and
+- **Guided onboarding via Embedded Signup** — connect a number through
+  Meta's guided flow instead of pasting credentials: either a brand-new
+  number, or an existing WhatsApp Business app number that keeps
+  working on the phone while the API runs alongside (coexistence).
+  Needs a Facebook Login for Business configuration id — see
+  [Enabling Embedded Signup](#enabling-embedded-signup) and
   [docs/coexistence.md](./docs/coexistence.md).
 - **Contacts + tags + custom fields**, CSV import, deduplication.
 - **Sales pipelines** (Kanban) with deals linked to conversations.
@@ -120,18 +119,32 @@ The rebuild is required — not just a restart — whenever any
 `NEXT_PUBLIC_*` variable changes, because Next.js inlines those into
 the client bundle at build time.
 
-## Enabling coexistence (pending App Review)
+## Enabling Embedded Signup
 
-Coexistence / Embedded Signup is **implemented and merged, but not yet
-live**: it needs `whatsapp_business_messaging` and
-`whatsapp_business_management` at **Advanced Access** on the Meta app,
-which goes through App Review (typically a few days, up to 20). Until
-that is granted, the *Launch Embedded Signup* button in
+Embedded Signup (new numbers **and** coexistence) needs, on the Meta
+app:
+
+1. **Business verification** complete on the owning Business Portfolio.
+2. **Advanced Access** for `whatsapp_business_messaging` and
+   `whatsapp_business_management` (App Review).
+3. **Facebook Login for Business** added, with *Login with the
+   JavaScript SDK* enabled and your CRM's HTTPS origin listed under
+   *Allowed Domains for the JavaScript SDK* (and *App Domains* in
+   App settings → Basic).
+4. A **Facebook Login for Business → Configuration** of type
+   *WhatsApp Embedded Signup*, token type *Business integration system
+   user access token*, both WhatsApp permissions ticked, and the
+   *"Onboard numbers from the WhatsApp Business app"* (coexistence)
+   option enabled. Copy its **Configuration ID**.
+
+The app must have the **WhatsApp use case** attached (Use cases → Add
+use case → *Access the WhatsApp Business Platform*), otherwise the
+configuration wizard only offers the *General* variation.
+
+Until the config id is set, the *Launch Embedded Signup* button in
 **Settings → WhatsApp** renders disabled and nothing else changes.
 
-Once Advanced Access is approved, create a **Facebook Login for
-Business** configuration of type *WhatsApp Embedded Signup*, copy its
-id, and add these to `.env.local`:
+Add these to `.env.local`:
 
 ```bash
 # Server-side — used to exchange the signup code for a token
@@ -146,10 +159,6 @@ NEXT_PUBLIC_META_ES_CONFIG_ID=your-fb-login-configuration-id
 Then redeploy with the commands above — both `NEXT_PUBLIC_META_*`
 values are wired as build args in `docker-compose.yml`, so they are
 only picked up by a `--build` run, never by a restart.
-
-Leave `NEXT_PUBLIC_META_ES_CONFIG_ID` unset until Advanced Access is
-granted — with it set beforehand the button goes live but Meta's popup
-won't offer the coexistence option, which is a dead end for the user.
 
 Full setup, webhook fields, and troubleshooting:
 [docs/coexistence.md](./docs/coexistence.md).

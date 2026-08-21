@@ -1,7 +1,11 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createAdminClient } from '@supabase/supabase-js'
-import { verifyPhoneNumber, subscribeWabaToApp } from '@/lib/whatsapp/meta-api'
+import {
+  verifyPhoneNumber,
+  subscribeWabaToApp,
+  registerPhoneNumber,
+} from '@/lib/whatsapp/meta-api'
 import { encrypt } from '@/lib/whatsapp/encryption'
 
 /**
@@ -11,24 +15,29 @@ import { encrypt } from '@/lib/whatsapp/encryption'
  * where the number keeps working in the WhatsApp Business app on the
  * phone while also joining the Cloud API.
  *
- * The client runs FB.login() with the Embedded Signup configuration
- * (see `whatsapp-config.tsx`), which yields:
+ * The client runs FB.login() with the Embedded Signup (v4)
+ * configuration (see `whatsapp-config.tsx`), which yields:
  *   - an OAuth `code` from the login callback, and
  *   - `phone_number_id` + `waba_id` from the WA_EMBEDDED_SIGNUP
- *     postMessage session-info event.
+ *     postMessage session-info event, plus the event name
+ *     (`FINISH` for a new Cloud API number,
+ *     `FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING` for coexistence).
  *
  * This route then:
  *   1. exchanges the code for a business-integration system-user token
  *      (server-side — needs META_APP_SECRET, never expose it),
- *   2. verifies the phone number with that token,
+ *   2. verifies the phone number with that token (also reading
+ *      `is_on_biz_app`, the authoritative coexistence flag),
  *   3. subscribes the WABA to this app so inbound webhooks flow,
- *   4. encrypts + stores everything in `whatsapp_config`.
- *
- * No `/register` call is made: coexistence numbers are registered by
- * the QR-scan onboarding itself, and re-registering with a PIN would
- * risk severing the phone-app link. Standard ES numbers that DO need
- * registration surface through the existing "Not registered" banner,
- * where a PIN can be added via the normal form.
+ *   4. for a NEW number only, POSTs /{phone_number_id}/register with
+ *      the user's 6-digit PIN (Meta only OTP-verifies during ES; the
+ *      number is not usable until registered). Coexistence numbers
+ *      are registered by the QR onboarding itself and re-registering
+ *      with a PIN would risk severing the phone-app link, so they are
+ *      skipped. A missing PIN or a /register failure is recorded
+ *      (registered_at null / last_registration_error) so the
+ *      "Not registered" banner + credentials form can finish the job,
+ *   5. encrypts + stores everything in `whatsapp_config`.
  *
  * Env: META_APP_ID + META_APP_SECRET (both already used elsewhere for
  * webhook signatures / template media).
@@ -99,10 +108,18 @@ export async function POST(request: Request) {
     const phoneNumberId =
       typeof body?.phone_number_id === 'string' ? body.phone_number_id : ''
     const wabaId = typeof body?.waba_id === 'string' ? body.waba_id : ''
+    const esEvent = typeof body?.es_event === 'string' ? body.es_event : ''
+    const pin = typeof body?.pin === 'string' ? body.pin.trim() : ''
 
     if (!code || !phoneNumberId || !wabaId) {
       return NextResponse.json(
         { error: 'code, phone_number_id and waba_id are required' },
+        { status: 400 },
+      )
+    }
+    if (pin && !/^\d{6}$/.test(pin)) {
+      return NextResponse.json(
+        { error: 'The two-step verification PIN must be exactly 6 digits' },
         { status: 400 },
       )
     }
@@ -187,8 +204,37 @@ export async function POST(request: Request) {
       )
     }
 
-    // 4. Encrypt + store. Coexistence numbers are registered by the QR
-    // onboarding itself, so mark registered_at now (see header note).
+    // 4. Register the number for the Cloud API — new numbers only (see
+    // header note). Coexistence is detected from Meta's own flag first
+    // and the session event second, so a stale client can't make us
+    // re-register a phone-app number.
+    const coexistence =
+      phoneInfo.is_on_biz_app === true ||
+      esEvent === 'FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING'
+    const mode: 'coexistence' | 'new' = coexistence ? 'coexistence' : 'new'
+
+    let registered = coexistence
+    let registrationSkipped = false
+    let registrationError: string | null = null
+    if (!coexistence) {
+      if (!pin) {
+        // Same best-effort rule as the manual form: save the verified
+        // credentials, leave registered_at null, let the banner guide
+        // the user to add a PIN.
+        registrationSkipped = true
+      } else {
+        try {
+          await registerPhoneNumber({ phoneNumberId, accessToken, pin })
+          registered = true
+        } catch (err) {
+          registrationError =
+            err instanceof Error ? err.message : 'Unknown Meta API error'
+          console.error('[embedded-signup] /register failed:', registrationError)
+        }
+      }
+    }
+
+    // 5. Encrypt + store.
     let encryptedAccessToken: string
     try {
       encryptedAccessToken = encrypt(accessToken)
@@ -206,11 +252,11 @@ export async function POST(request: Request) {
       phone_number_id: phoneNumberId,
       waba_id: wabaId,
       access_token: encryptedAccessToken,
-      status: 'connected',
-      connected_at: now,
-      registered_at: now,
+      status: registrationError ? 'disconnected' : 'connected',
+      connected_at: registrationError ? null : now,
+      registered_at: registered ? now : null,
       subscribed_apps_at: now,
-      last_registration_error: null,
+      last_registration_error: registrationError,
       updated_at: now,
     }
 
@@ -245,7 +291,13 @@ export async function POST(request: Request) {
       }
     }
 
-    return NextResponse.json({ success: true, phone_info: phoneInfo })
+    return NextResponse.json({
+      success: true,
+      mode,
+      phone_info: phoneInfo,
+      registration_skipped: registrationSkipped,
+      registration_error: registrationError,
+    })
   } catch (error) {
     console.error('[embedded-signup] error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

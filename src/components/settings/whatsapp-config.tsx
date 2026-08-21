@@ -90,7 +90,17 @@ export function WhatsAppConfig() {
 
   // Embedded Signup (coexistence) — see handlers further down.
   const [esConnecting, setEsConnecting] = useState(false);
-  const esSessionRef = useRef<{ phone_number_id?: string; waba_id?: string }>({});
+  // Optional 6-digit two-step PIN for Embedded Signup. A brand-new
+  // Cloud API number must be /register-ed with a PIN before it can
+  // send or receive; coexistence numbers (QR-scanned from the
+  // WhatsApp Business app) are registered by the onboarding itself
+  // and the server ignores the PIN for them.
+  const [esPin, setEsPin] = useState('');
+  const esSessionRef = useRef<{
+    phone_number_id?: string;
+    waba_id?: string;
+    event?: string;
+  }>({});
 
   // True once /register has succeeded on Meta's side (timestamp set
   // in the row). When false, the saved config is metadata-only and
@@ -393,15 +403,19 @@ export function WhatsAppConfig() {
     toast.success('Webhook URL copied to clipboard');
   }
 
-  // ── Embedded Signup (coexistence) ─────────────────────────────
-  // Launches Meta's Embedded Signup popup. With featureType
-  // 'whatsapp_business_app_onboarding' the flow offers "use your
-  // existing WhatsApp Business app number" (QR scan) — the number
-  // keeps working in the phone app while joining the Cloud API.
+  // ── Embedded Signup (v4) ──────────────────────────────────────
+  // Launches Meta's Embedded Signup popup. In v4 the flow is driven
+  // entirely by the Facebook Login for Business *configuration*
+  // (NEXT_PUBLIC_META_ES_CONFIG_ID): whether the popup offers "use
+  // your existing WhatsApp Business app number" (coexistence — the
+  // number keeps working in the phone app while joining the Cloud
+  // API) is a setting on that configuration, not a code parameter.
   // The popup posts WA_EMBEDDED_SIGNUP session-info messages carrying
-  // the onboarded phone_number_id + waba_id; FB.login's callback
-  // yields the OAuth code. Both go to /api/whatsapp/embedded-signup,
-  // which exchanges the code server-side and stores the config.
+  // the onboarded phone_number_id + waba_id and an event name
+  // (FINISH, or FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING for
+  // coexistence); FB.login's callback yields the OAuth code. All of
+  // it goes to /api/whatsapp/embedded-signup, which exchanges the
+  // code server-side, registers new numbers, and stores the config.
   const esAppId = process.env.NEXT_PUBLIC_META_APP_ID;
   const esConfigId = process.env.NEXT_PUBLIC_META_ES_CONFIG_ID;
   const esConfigured = Boolean(esAppId && esConfigId);
@@ -425,6 +439,7 @@ export function WhatsAppConfig() {
             esSessionRef.current = {
               phone_number_id: data.data.phone_number_id,
               waba_id: data.data.waba_id,
+              event: typeof data.event === 'string' ? data.event : undefined,
             };
           }
         }
@@ -460,6 +475,11 @@ export function WhatsAppConfig() {
       );
       return;
     }
+    const pin = esPin.trim();
+    if (pin && pin.length !== 6) {
+      toast.error('The two-step verification PIN must be exactly 6 digits.');
+      return;
+    }
     setEsConnecting(true);
     esSessionRef.current = {};
     try {
@@ -472,7 +492,7 @@ export function WhatsAppConfig() {
             toast.error('Signup was cancelled before completing.');
             return;
           }
-          const { phone_number_id, waba_id } = esSessionRef.current;
+          const { phone_number_id, waba_id, event } = esSessionRef.current;
           if (!phone_number_id || !waba_id) {
             setEsConnecting(false);
             toast.error(
@@ -485,13 +505,36 @@ export function WhatsAppConfig() {
               const res = await fetch('/api/whatsapp/embedded-signup', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ code, phone_number_id, waba_id }),
+                body: JSON.stringify({
+                  code,
+                  phone_number_id,
+                  waba_id,
+                  es_event: event,
+                  pin: pin || undefined,
+                }),
               });
               const json = await res.json();
               if (!res.ok || json.error) {
                 throw new Error(json.error || 'Failed to complete Embedded Signup');
               }
-              toast.success('WhatsApp connected via Embedded Signup');
+              if (json.registration_error) {
+                toast.warning(
+                  `Number connected, but registration failed: ${json.registration_error}. ` +
+                    'Fix the PIN in the credentials form below and save to retry.'
+                );
+              } else if (json.registration_skipped) {
+                toast.warning(
+                  'Number connected but not yet registered for the Cloud API. ' +
+                    'Enter a 6-digit two-step PIN in the credentials form below and save.'
+                );
+              } else {
+                toast.success(
+                  json.mode === 'coexistence'
+                    ? 'WhatsApp connected — the number keeps working in the WhatsApp Business app too'
+                    : 'WhatsApp connected via Embedded Signup'
+                );
+              }
+              setEsPin('');
               setConnectionStatus('connected');
               if (accountId) {
                 loadedAccountIdRef.current = null;
@@ -511,11 +554,9 @@ export function WhatsAppConfig() {
           config_id: esConfigId!,
           response_type: 'code',
           override_default_response_type: true,
-          extras: {
-            setup: {},
-            featureType: 'whatsapp_business_app_onboarding',
-            sessionInfoVersion: '3',
-          },
+          // Embedded Signup v4: no featureType / sessionInfoVersion —
+          // the configuration decides which onboarding options show.
+          extras: { setup: {} },
         }
       );
     } catch (err) {
@@ -707,20 +748,43 @@ export function WhatsAppConfig() {
           </Alert>
         )}
 
-        {/* Embedded Signup (coexistence) */}
+        {/* Embedded Signup */}
         <Card>
           <CardHeader>
             <CardTitle className="text-foreground">
-              Connect with Embedded Signup (coexistence)
+              Connect with Embedded Signup
             </CardTitle>
             <CardDescription className="text-muted-foreground">
-              Onboard a number through Meta&apos;s guided flow — including a
-              number that stays active in the WhatsApp Business app on your
-              phone (coexistence). You&apos;ll scan a QR code from the app;
-              chats keep working there while the API connects here.
+              Onboard a number through Meta&apos;s guided flow — no Phone
+              Number ID, WABA ID or access token to paste. In the popup you
+              can either bring a brand-new number onto the API, or scan a QR
+              code to keep an existing WhatsApp Business app number working
+              on your phone while the API runs alongside (coexistence).
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-3">
+          <CardContent className="space-y-4">
+            <div className="space-y-1.5">
+              <Label className="text-muted-foreground">
+                Two-step PIN for a new number (optional)
+              </Label>
+              <Input
+                inputMode="numeric"
+                placeholder="6 digits"
+                value={esPin}
+                onChange={(e) =>
+                  setEsPin(e.target.value.replace(/\D/g, '').slice(0, 6))
+                }
+                disabled={esConnecting || !esConfigured}
+                className="w-40 bg-muted border-border text-foreground placeholder:text-muted-foreground"
+              />
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                Only needed when you bring a <strong>new</strong> number onto
+                the API: it is set as the number&apos;s two-step verification
+                PIN and used to register it. Keep it somewhere safe. Leave
+                blank when scanning the QR from the WhatsApp Business app
+                (coexistence) — that number is already registered.
+              </p>
+            </div>
             <Button
               onClick={handleEmbeddedSignup}
               disabled={esConnecting || !esConfigured}

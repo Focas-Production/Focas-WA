@@ -21,6 +21,14 @@ export interface MetaPhoneInfo {
   display_phone_number: string
   verified_name?: string
   quality_rating?: string
+  /**
+   * True when the number is also active in the WhatsApp Business app
+   * (coexistence). Such numbers are registered by the Embedded Signup
+   * QR onboarding itself and must NOT be /register-ed again.
+   */
+  is_on_biz_app?: boolean
+  /** CLOUD_API | ON_PREMISE | NOT_APPLICABLE */
+  platform_type?: string
 }
 
 interface MetaErrorResponse {
@@ -55,7 +63,7 @@ export async function verifyPhoneNumber(
   args: VerifyPhoneNumberArgs
 ): Promise<MetaPhoneInfo> {
   const { phoneNumberId, accessToken } = args
-  const url = `${META_API_BASE}/${phoneNumberId}?fields=id,display_phone_number,verified_name,quality_rating`
+  const url = `${META_API_BASE}/${phoneNumberId}?fields=id,display_phone_number,verified_name,quality_rating,is_on_biz_app,platform_type`
   const response = await fetch(url, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
