@@ -20,6 +20,7 @@ import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { SettingsPanelHead } from './settings-panel-head';
@@ -96,6 +97,11 @@ export function WhatsAppConfig() {
   // WhatsApp Business app) are registered by the onboarding itself
   // and the server ignores the PIN for them.
   const [esPin, setEsPin] = useState('');
+  // Coexistence: onboard a number that is currently active in the
+  // WhatsApp Business app (QR scan). Meta gates that screen behind the
+  // `whatsapp_business_app_onboarding` feature selection, so we only
+  // request it when the user asks for it.
+  const [esCoexistence, setEsCoexistence] = useState(true);
   const esSessionRef = useRef<{
     phone_number_id?: string;
     waba_id?: string;
@@ -405,11 +411,14 @@ export function WhatsAppConfig() {
 
   // ── Embedded Signup (v4) ──────────────────────────────────────
   // Launches Meta's Embedded Signup popup. In v4 the flow is driven
-  // entirely by the Facebook Login for Business *configuration*
-  // (NEXT_PUBLIC_META_ES_CONFIG_ID): whether the popup offers "use
-  // your existing WhatsApp Business app number" (coexistence — the
-  // number keeps working in the phone app while joining the Cloud
-  // API) is a setting on that configuration, not a code parameter.
+  // by the Facebook Login for Business *configuration*
+  // (NEXT_PUBLIC_META_ES_CONFIG_ID). The one remaining code-side
+  // switch is coexistence: passing
+  // `featureType: 'whatsapp_business_app_onboarding'` replaces the
+  // WABA-selection screen with "connect your existing WhatsApp
+  // Business app number" (QR scan) — the number keeps working in the
+  // phone app while joining the Cloud API. Without it the popup only
+  // offers to add/create a new Cloud API number.
   // The popup posts WA_EMBEDDED_SIGNUP session-info messages carrying
   // the onboarded phone_number_id + waba_id and an event name
   // (FINISH, or FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING for
@@ -554,9 +563,14 @@ export function WhatsAppConfig() {
           config_id: esConfigId!,
           response_type: 'code',
           override_default_response_type: true,
-          // Embedded Signup v4: no featureType / sessionInfoVersion —
-          // the configuration decides which onboarding options show.
-          extras: { setup: {} },
+          // Embedded Signup v4: the configuration drives the flow; the
+          // only extra we add is the coexistence feature selection.
+          extras: {
+            setup: {},
+            ...(esCoexistence
+              ? { featureType: 'whatsapp_business_app_onboarding' }
+              : {}),
+          },
         }
       );
     } catch (err) {
@@ -763,6 +777,25 @@ export function WhatsAppConfig() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
+            <div className="flex items-start gap-3 rounded-md border border-border p-3">
+              <Switch
+                id="es-coexistence"
+                checked={esCoexistence}
+                onCheckedChange={setEsCoexistence}
+                disabled={esConnecting || !esConfigured}
+              />
+              <div className="space-y-1">
+                <Label htmlFor="es-coexistence" className="text-foreground">
+                  Number is currently used in the WhatsApp Business app (coexistence)
+                </Label>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  On: the popup offers &quot;connect your existing WhatsApp
+                  Business app number&quot; — you scan a QR code from the
+                  app and it keeps working on the phone. Off: the popup
+                  adds a brand-new number to the Cloud API instead.
+                </p>
+              </div>
+            </div>
             <div className="space-y-1.5">
               <Label className="text-muted-foreground">
                 Two-step PIN for a new number (optional)

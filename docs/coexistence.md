@@ -31,16 +31,17 @@ Coexistence removes the trade-off. The number stays live in the app
 
 ## What the user sees
 
-**Settings → WhatsApp → Connect with Embedded Signup → Launch Embedded
-Signup**. Meta's popup opens and — because the Facebook Login for
-Business configuration has *Onboard numbers from the WhatsApp Business
-app* enabled — offers both paths:
+**Settings → WhatsApp → Connect with Embedded Signup**. A switch,
+*"Number is currently used in the WhatsApp Business app (coexistence)"*
+(on by default), decides which flow Meta's popup runs:
 
-- **Existing WhatsApp Business app number** (coexistence) — the popup
-  shows a QR code, the business scans it from the WhatsApp Business
-  app, approves sharing chat history, and the connection is saved.
-  The number is registered by the onboarding itself.
-- **New number** — Meta OTP-verifies the number in the popup. Because
+- **Switch on — existing WhatsApp Business app number** (coexistence):
+  wacrm passes `featureType: 'whatsapp_business_app_onboarding'`, so
+  the popup replaces the WABA-selection screen with *connect your
+  existing WhatsApp Business app number*; the business scans a QR code
+  from the app, approves sharing chat history, and the connection is
+  saved. The number is registered by the onboarding itself.
+- **Switch off — new number**: Meta OTP-verifies the number in the popup. Because
   a fresh Cloud API number must still be `/register`-ed with a
   two-step PIN, the card has an optional *6-digit PIN* field: fill it
   before launching and wacrm registers the number immediately; leave
@@ -105,8 +106,12 @@ restart** after setting them, or the button stays disabled.
 
 ```
 Browser                        wacrm server                  Meta
-  │  FB.login(config_id,           │                           │
-  │    extras: { setup: {} })  ────┼──────────────────────────▶│
+  │  FB.login(config_id, extras:   │                           │
+  │    { setup: {}, featureType:   │                           │
+  │      'whatsapp_business_app_   │                           │
+  │       onboarding' ← only when  │                           │
+  │       the coexistence switch   │                           │
+  │       is on })  ───────────────┼──────────────────────────▶│
   │                                │   QR scan / OTP + consent │
   │  ◀── code + WA_EMBEDDED_SIGNUP session info               │
   │      (phone id, waba id, event FINISH |                    │
@@ -128,8 +133,9 @@ Implementation:
 - **`src/components/settings/whatsapp-config.tsx`** — loads the
   Facebook JS SDK on demand, launches `FB.login` with the v4
   parameters (`config_id`, `response_type: 'code'`,
-  `extras: { setup: {} }` — no `featureType`/`sessionInfoVersion`),
-  and listens for
+  `extras: { setup: {} }`, plus
+  `featureType: 'whatsapp_business_app_onboarding'` when the
+  coexistence switch is on — no `sessionInfoVersion`), and listens for
   `WA_EMBEDDED_SIGNUP` `postMessage` events (origin-checked against
   `facebook.com`) to capture `phone_number_id` and `waba_id`.
 - **`src/app/api/whatsapp/embedded-signup/route.ts`** — exchanges the
