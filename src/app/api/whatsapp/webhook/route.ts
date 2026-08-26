@@ -58,6 +58,14 @@ interface WhatsAppMessage {
     button_reply?: { id: string; title: string }
     list_reply?: { id: string; title: string; description?: string }
   }
+  /**
+   * Set when the customer taps a quick-reply button on a TEMPLATE message.
+   * Distinct from `interactive` (which covers buttons/lists on interactive
+   * messages): Meta delivers template taps as type 'button'. `payload` is
+   * the developer-defined payload on the template button; `text` is the
+   * visible label.
+   */
+  button?: { payload?: string; text?: string }
   /** Present when the customer swipe-replies to one of our messages. */
   context?: { id: string }
 }
@@ -885,7 +893,9 @@ async function processMessage(
     ? message.type
     : message.type === 'sticker'
       ? 'image'   // stickers are images
-      : 'text'    // reaction, unknown → text fallback
+      : message.type === 'button'
+        ? 'interactive'   // template quick-reply tap — same affordance as a button tap
+        : 'text'    // reaction, unknown → text fallback
 
   // Determine whether this is the contact's very first inbound message
   // BEFORE we insert, so the count is accurate. Covers the case where
@@ -1061,8 +1071,17 @@ async function processMessage(
   // without a follow-up API call to resolve the contact or having to
   // match list rows by title. The original minimal fields stay for
   // backward compatibility with existing subscribers.
+  // Template quick-reply taps (type 'button') ride the same field, so bot
+  // subscribers handle template buttons and interactive buttons identically.
   const interactiveReply =
-    message.interactive?.list_reply ?? message.interactive?.button_reply ?? null
+    message.interactive?.list_reply ??
+    message.interactive?.button_reply ??
+    (message.button?.text || message.button?.payload
+      ? {
+          id: message.button.payload || message.button.text || '',
+          title: message.button.text || message.button.payload || '',
+        }
+      : null)
   await dispatchWebhookEvent(supabaseAdmin(), accountId, 'message.received', {
     conversation_id: conversation.id,
     contact_id: contactRecord.id,
@@ -1084,7 +1103,7 @@ async function processMessage(
      *  list rows and reply buttons alike; null for plain messages. */
     interactive_reply: interactiveReply
       ? {
-          type: message.interactive?.type ?? null,
+          type: message.interactive?.type ?? (message.button ? 'button' : null),
           id: interactiveReply.id,
           title: interactiveReply.title,
           description:
@@ -1231,6 +1250,23 @@ async function parseMessageContent(
         }
       }
       return { ...empty, contentText: '[Interactive reply]' }
+    }
+
+    case 'button': {
+      // The customer tapped a quick-reply button on a TEMPLATE message.
+      // Meta delivers this as type 'button' (NOT 'interactive'). Show the
+      // visible label in the inbox bubble and expose the developer-defined
+      // payload as the stable id so bots/flows can route on it — falling
+      // back to the label when the template button carries no payload.
+      const btn = message.button
+      if (btn?.text || btn?.payload) {
+        return {
+          ...empty,
+          contentText: btn.text || btn.payload || null,
+          interactiveReplyId: btn.payload || btn.text || null,
+        }
+      }
+      return { ...empty, contentText: '[Button reply]' }
     }
 
     default:
