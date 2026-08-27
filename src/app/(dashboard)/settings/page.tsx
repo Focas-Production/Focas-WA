@@ -19,6 +19,7 @@ import { DealsSettings } from '@/components/settings/deals-settings';
 import { MembersTab } from '@/components/settings/members-tab';
 import { ApiKeysSettings } from '@/components/settings/api-keys-settings';
 import { WebhooksSettings } from '@/components/settings/webhooks-settings';
+import { CatalogProductsSettings } from '@/components/settings/catalog-products-settings';
 import { ShopifySettings } from '@/components/settings/shopify-settings';
 import { WalletSettings } from '@/components/settings/wallet-settings';
 import {
@@ -86,6 +87,7 @@ function SettingsPageInner() {
     members: <MembersTab />,
     api: <ApiKeysSettings />,
     webhooks: <WebhooksSettings />,
+    products: <CatalogProductsSettings />,
     shopify: <ShopifySettings />,
   };
 

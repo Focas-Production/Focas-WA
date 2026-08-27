@@ -9,6 +9,10 @@ import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
+import {
+  buildOrderSummary,
+  captureAndResolveOrderProducts,
+} from '@/lib/whatsapp/order-products'
 import { refundTemplateCharge, refundBroadcastMessage } from '@/lib/wallet/wallet'
 import {
   handleTemplateWebhookChange,
@@ -870,8 +874,26 @@ async function processMessage(
   }
 
   // Parse message content based on type
-  const { contentText, mediaUrl, mediaType, interactiveReplyId } =
-    await parseMessageContent(message, accessToken)
+  const parsed = await parseMessageContent(message, accessToken)
+  const { mediaUrl, mediaType, interactiveReplyId } = parsed
+  let { contentText } = parsed
+
+  // Cart orders: auto-capture line items into catalog_products and,
+  // when the admin has already named them in Settings → Catalog
+  // products, re-render the summary with real product names instead of
+  // opaque retailer ids. Never throws; on any failure the retailer-id
+  // fallback from parseMessageContent stands.
+  let orderProductNames: ReadonlyMap<string, string> = new Map()
+  if (message.type === 'order' && message.order) {
+    orderProductNames = await captureAndResolveOrderProducts(
+      supabaseAdmin(),
+      accountId,
+      message.order
+    )
+    if (orderProductNames.size > 0) {
+      contentText = buildOrderSummary(message.order, orderProductNames)
+    }
+  }
 
   // Resolve swipe-reply context if present. A missing parent is fine —
   // we just store NULL and the UI renders the message without a quote.
@@ -1156,6 +1178,11 @@ async function processMessage(
       note: message.order.text ?? null,
       items: orderItems.map((item) => ({
         product_retailer_id: item.product_retailer_id ?? null,
+        /** From the local catalog_products map (Settings → Catalog
+         *  products); null until the admin names the product there. */
+        name: item.product_retailer_id
+          ? (orderProductNames.get(item.product_retailer_id) ?? null)
+          : null,
         quantity: item.quantity ?? 1,
         item_price: item.item_price ?? 0,
         currency: item.currency ?? null,
@@ -1166,23 +1193,6 @@ async function processMessage(
       ),
       currency: orderItems[0]?.currency ?? null,
     })
-  }
-}
-
-/**
- * "1 INR" → "₹1.00". Meta sends ISO-4217 codes, but guard anyway — a
- * bad code must never make the webhook drop the whole order message.
- * (lib/currency's formatCurrency rounds to whole units, which would
- * turn a ₹1.50 line item into ₹2 — so format locally with 2 decimals.)
- */
-function formatOrderAmount(value: number, currency: string): string {
-  try {
-    return new Intl.NumberFormat('en', {
-      style: 'currency',
-      currency,
-    }).format(value)
-  } catch {
-    return `${currency} ${value.toFixed(2)}`
   }
 }
 
@@ -1327,32 +1337,17 @@ async function parseMessageContent(
       // A cart sent from a product catalog. The messages schema has no
       // structured-order column, so render a readable multi-line summary
       // as text (MessageBubble uses whitespace-pre-wrap, so the line
-      // breaks survive). Subscribers that need the STRUCTURED cart —
-      // e.g. a server generating a Razorpay payment link — get it via
-      // the `order.received` webhook dispatched in processMessage, and
+      // breaks survive). Product names are resolved from the local
+      // catalog_products map later in processMessage (this parser has
+      // no account context) — here items render by retailer id as a
+      // fallback. Subscribers that need the STRUCTURED cart — e.g. a
+      // server generating a Razorpay payment link — get it via the
+      // `order.received` webhook dispatched in processMessage, and
       // must not parse this display string.
-      const items = message.order?.product_items ?? []
-      const itemCount = items.reduce((n, item) => n + (item.quantity ?? 1), 0)
-      const currency = items[0]?.currency
-      const total = items.reduce(
-        (sum, item) => sum + (item.item_price ?? 0) * (item.quantity ?? 1),
-        0
-      )
-      const lines = [
-        `🛒 Order — ${itemCount} item${itemCount === 1 ? '' : 's'}${
-          currency ? ` · ${formatOrderAmount(total, currency)}` : ''
-        }`,
-        ...items.map(
-          (item) =>
-            `• ${item.quantity ?? 1} × ${item.product_retailer_id ?? 'item'}${
-              item.item_price != null && item.currency
-                ? ` — ${formatOrderAmount(item.item_price, item.currency)}`
-                : ''
-            }`
-        ),
-      ]
-      if (message.order?.text) lines.push(`Note: ${message.order.text}`)
-      return { ...empty, contentText: lines.join('\n') }
+      return {
+        ...empty,
+        contentText: buildOrderSummary(message.order ?? {}, new Map()),
+      }
     }
 
     case 'button': {

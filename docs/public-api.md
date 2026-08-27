@@ -164,6 +164,30 @@ Domain error codes beyond the table above: `whatsapp_not_configured`
 (400), `meta_error` (502 — the request reached Meta and it rejected the
 send), `template_malformed` (500).
 
+### `POST /api/v1/typing`
+
+Show "typing…" (and blue ticks) on a contact's phone while your bot
+prepares its reply — wacrm sends Meta's read + typing acknowledgment
+with its own stored token, so your integration never needs a Meta
+access token for this. Scope: `messages:send`.
+
+Body — one of:
+
+```jsonc
+{ "whatsapp_message_id": "wamid.…" }  // the inbound wamid you're replying to
+                                       // (preferred — you have it from the
+                                       // message.received webhook)
+{ "to": "+14155550123" }               // contact phone; wacrm resolves their
+                                       // latest inbound message
+```
+
+The indicator auto-dismisses after ~25s or as soon as your next message
+lands, and is only valid inside the 24h session window. Cosmetic
+semantics: soft failures return 200 with `{ "shown": false, "reason":
+"unknown_message" | "unknown_contact" | "no_inbound" | "session_expired"
+| "meta_rejected" }` — fire-and-forget, never retry. Success is
+`{ "shown": true }`.
+
 ### `GET /api/v1/contacts`
 
 List contacts, newest first. Scope: `contacts:read`. Paginated (see
@@ -342,14 +366,18 @@ delivery uuid you can dedupe on, and `data` varies by `event`:
 // to message.received (whose text is a human-readable summary of the same
 // cart). item_price and total_amount are in currency UNITS (1.5 = ₹1.50),
 // not subunits — multiply by 100 yourself for gateways that want paise
-// (e.g. Razorpay payment links).
+// (e.g. Razorpay payment links). `name` comes from the local product map
+// (Settings → Catalog products, migration 043): Meta's payload never
+// carries product names and the catalog API is unavailable for
+// coexistence numbers, so products are auto-captured on first order and
+// named once by an admin; until then `name` is null.
 {
   "conversation_id": "…", "contact_id": "…", "whatsapp_message_id": "wamid.…",
   "phone": "+917305504500", "wa_id": "917305504500",
   "sender_name": "Dinesh", "contact_name": "Dinesh S",
   "timestamp": "2026-08-27T04:17:00.000Z",
   "catalog_id": "…", "note": null,
-  "items": [{ "product_retailer_id": "SKU123", "quantity": 1, "item_price": 1, "currency": "INR" }],
+  "items": [{ "product_retailer_id": "SKU123", "name": "CA Foundation MCQ Pack", "quantity": 1, "item_price": 1, "currency": "INR" }],
   "total_amount": 1, "currency": "INR"
 }
 // conversation.created
