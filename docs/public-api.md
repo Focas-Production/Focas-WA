@@ -292,6 +292,7 @@ things happen in your account. **Migration required:** apply
 | Event                    | Fires when                                        |
 | ------------------------ | ------------------------------------------------- |
 | `message.received`        | An inbound message arrives from a contact                       |
+| `order.received`          | A contact sent a cart order from a catalog (fires in addition to `message.received`) |
 | `message.sent`            | An outbound session message was sent (agent or bot)             |
 | `template.message.sent`   | An outbound template message was sent (inbox/automation/broadcast) |
 | `template.message.failed` | A template message failed to send or to be delivered            |
@@ -337,6 +338,20 @@ delivery uuid you can dedupe on, and `data` varies by `event`:
 ```jsonc
 // message.received
 { "conversation_id": "…", "contact_id": "…", "whatsapp_message_id": "wamid.…", "content_type": "text", "text": "Hi 👋" }
+// order.received — a cart sent from a product catalog. Fires in addition
+// to message.received (whose text is a human-readable summary of the same
+// cart). item_price and total_amount are in currency UNITS (1.5 = ₹1.50),
+// not subunits — multiply by 100 yourself for gateways that want paise
+// (e.g. Razorpay payment links).
+{
+  "conversation_id": "…", "contact_id": "…", "whatsapp_message_id": "wamid.…",
+  "phone": "+917305504500", "wa_id": "917305504500",
+  "sender_name": "Dinesh", "contact_name": "Dinesh S",
+  "timestamp": "2026-08-27T04:17:00.000Z",
+  "catalog_id": "…", "note": null,
+  "items": [{ "product_retailer_id": "SKU123", "quantity": 1, "item_price": 1, "currency": "INR" }],
+  "total_amount": 1, "currency": "INR"
+}
 // conversation.created
 { "conversation_id": "…", "contact_id": "…" }
 // message.status_updated

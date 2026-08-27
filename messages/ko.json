@@ -1762,6 +1762,7 @@
       "eventsRequired": "이벤트를 하나 이상 선택하세요",
       "eventNames": {
         "message_received": "메시지 수신",
+        "order_received": "주문 수신",
         "message_sent": "세션 메시지 전송",
         "template_message_sent": "템플릿 메시지 전송",
         "template_message_failed": "템플릿 메시지 실패",
@@ -1771,6 +1772,7 @@
       },
       "eventDescriptions": {
         "message_received": "연락처로부터 인바운드 메시지를 받았습니다",
+        "order_received": "연락처가 카탈로그에서 장바구니 주문을 보냈습니다 (품목 및 합계 포함)",
         "message_sent": "아웃바운드 세션 메시지를 보냈습니다 (상담원 또는 봇)",
         "template_message_sent": "아웃바운드 템플릿 메시지를 보냈습니다 (받은편지함, 자동화, 브로드캐스트)",
         "template_message_failed": "템플릿 메시지 전송 또는 도달에 실패했습니다",

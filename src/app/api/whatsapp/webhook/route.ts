@@ -66,6 +66,24 @@ interface WhatsAppMessage {
    * visible label.
    */
   button?: { payload?: string; text?: string }
+  /**
+   * Set when the customer sends a cart from a product catalog (message
+   * type 'order'). `item_price` is in currency UNITS (1.00 = ₹1), not
+   * subunits. Coexistence numbers receive these but can't take WhatsApp
+   * Pay, so processMessage relays the structured cart out via the
+   * `order.received` webhook for an external server to collect payment
+   * (e.g. by sending a Razorpay payment link).
+   */
+  order?: {
+    catalog_id?: string
+    text?: string
+    product_items?: Array<{
+      product_retailer_id?: string
+      quantity?: number
+      item_price?: number
+      currency?: string
+    }>
+  }
   /** Present when the customer swipe-replies to one of our messages. */
   context?: { id: string }
 }
@@ -1113,6 +1131,59 @@ async function processMessage(
     /** Meta id of the message this one swipe-replied to, if any. */
     reply_to_whatsapp_message_id: message.context?.id ?? null,
   })
+
+  // order.received webhook — fired IN ADDITION to message.received when
+  // the inbound is a cart order, so a payment server can subscribe to
+  // just orders without filtering the whole message stream. Coexistence
+  // numbers can't use WhatsApp Pay, so the expected consumer builds a
+  // payment link (e.g. Razorpay) from `items`/`total_amount` and sends
+  // it back into the conversation via the public API. Items are relayed
+  // as Meta sent them (item_price in currency UNITS, not subunits) plus
+  // a computed total so the receiver doesn't re-derive it.
+  if (message.type === 'order' && message.order) {
+    const orderItems = message.order.product_items ?? []
+    await dispatchWebhookEvent(supabaseAdmin(), accountId, 'order.received', {
+      conversation_id: conversation.id,
+      contact_id: contactRecord.id,
+      whatsapp_message_id: message.id,
+      phone: senderPhone,
+      wa_id: senderPhone.replace(/\D/g, ''),
+      sender_name: contactName,
+      contact_name: contactRecord.name ?? contactName,
+      timestamp: new Date(parseInt(message.timestamp) * 1000).toISOString(),
+      catalog_id: message.order.catalog_id ?? null,
+      /** Free-text note the customer attached to the cart, if any. */
+      note: message.order.text ?? null,
+      items: orderItems.map((item) => ({
+        product_retailer_id: item.product_retailer_id ?? null,
+        quantity: item.quantity ?? 1,
+        item_price: item.item_price ?? 0,
+        currency: item.currency ?? null,
+      })),
+      total_amount: orderItems.reduce(
+        (sum, item) => sum + (item.item_price ?? 0) * (item.quantity ?? 1),
+        0
+      ),
+      currency: orderItems[0]?.currency ?? null,
+    })
+  }
+}
+
+/**
+ * "1 INR" → "₹1.00". Meta sends ISO-4217 codes, but guard anyway — a
+ * bad code must never make the webhook drop the whole order message.
+ * (lib/currency's formatCurrency rounds to whole units, which would
+ * turn a ₹1.50 line item into ₹2 — so format locally with 2 decimals.)
+ */
+function formatOrderAmount(value: number, currency: string): string {
+  try {
+    return new Intl.NumberFormat('en', {
+      style: 'currency',
+      currency,
+    }).format(value)
+  } catch {
+    return `${currency} ${value.toFixed(2)}`
+  }
 }
 
 async function parseMessageContent(
@@ -1250,6 +1321,38 @@ async function parseMessageContent(
         }
       }
       return { ...empty, contentText: '[Interactive reply]' }
+    }
+
+    case 'order': {
+      // A cart sent from a product catalog. The messages schema has no
+      // structured-order column, so render a readable multi-line summary
+      // as text (MessageBubble uses whitespace-pre-wrap, so the line
+      // breaks survive). Subscribers that need the STRUCTURED cart —
+      // e.g. a server generating a Razorpay payment link — get it via
+      // the `order.received` webhook dispatched in processMessage, and
+      // must not parse this display string.
+      const items = message.order?.product_items ?? []
+      const itemCount = items.reduce((n, item) => n + (item.quantity ?? 1), 0)
+      const currency = items[0]?.currency
+      const total = items.reduce(
+        (sum, item) => sum + (item.item_price ?? 0) * (item.quantity ?? 1),
+        0
+      )
+      const lines = [
+        `🛒 Order — ${itemCount} item${itemCount === 1 ? '' : 's'}${
+          currency ? ` · ${formatOrderAmount(total, currency)}` : ''
+        }`,
+        ...items.map(
+          (item) =>
+            `• ${item.quantity ?? 1} × ${item.product_retailer_id ?? 'item'}${
+              item.item_price != null && item.currency
+                ? ` — ${formatOrderAmount(item.item_price, item.currency)}`
+                : ''
+            }`
+        ),
+      ]
+      if (message.order?.text) lines.push(`Note: ${message.order.text}`)
+      return { ...empty, contentText: lines.join('\n') }
     }
 
     case 'button': {

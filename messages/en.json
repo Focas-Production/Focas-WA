@@ -1764,6 +1764,7 @@
       "eventsRequired": "Select at least one event",
       "eventNames": {
         "message_received": "Message Received",
+        "order_received": "Order Received",
         "message_sent": "Session Message Sent",
         "template_message_sent": "Template Message Sent",
         "template_message_failed": "Template Message Failed",
@@ -1773,6 +1774,7 @@
       },
       "eventDescriptions": {
         "message_received": "An inbound message was received from a contact",
+        "order_received": "A contact sent a cart order from a catalog (includes items and totals)",
         "message_sent": "An outbound session message was sent (by an agent or a bot)",
         "template_message_sent": "An outbound template message was sent (inbox, automation, or broadcast)",
         "template_message_failed": "A template message failed to send or to be delivered",
