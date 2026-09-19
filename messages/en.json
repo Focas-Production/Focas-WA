@@ -660,7 +660,13 @@
       "scheduledFor": "Scheduled for {when}",
       "cancelSchedule": "Cancel schedule",
       "toastCancelled": "Broadcast cancelled — unsent messages refunded to your wallet.",
-      "toastCancelTooLate": "Too late to cancel — sending has already started."
+      "toastCancelTooLate": "Too late to cancel — sending has already started.",
+      "stopSending": "Stop sending",
+      "stopping": "Stopping…",
+      "toastStopped": "Sending stopped. Messages already sent aren't affected; unsent ones are refunded to your wallet.",
+      "toastStopFailed": "Couldn't stop the broadcast: {error}",
+      "sendingProgress": "Sending {done} of {total}",
+      "sendingHint": "Sending runs on the server — you can close this page."
     },
     "new": {
       "title": "New Broadcast",
@@ -676,7 +682,8 @@
       "toastNotLinked": "Your profile is not linked to an account.",
       "toastFailedDraft": "Failed to save draft: {error}",
       "toastDraftSaved": "Draft saved",
-      "toastScheduled": "Broadcast scheduled for {when}."
+      "toastScheduled": "Broadcast scheduled for {when}.",
+      "toastOverLimit": "Your WhatsApp number can message {limit} different people per 24 hours, and this broadcast has {count}. Sends past the limit will fail (and be refunded)."
     },
     "wizard": {
       "next": "Next",

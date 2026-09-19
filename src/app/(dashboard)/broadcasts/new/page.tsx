@@ -114,7 +114,7 @@ function NewBroadcastPageInner() {
     if (!template) return;
 
     try {
-      const broadcastId = await createAndSendBroadcast({
+      const { broadcastId, totalRecipients, messagingLimit } = await createAndSendBroadcast({
         name,
         template,
         audience: {
@@ -133,6 +133,12 @@ function NewBroadcastPageInner() {
       if (scheduledAt) {
         toast.success(
           t('toastScheduled', { when: new Date(scheduledAt).toLocaleString() }),
+        );
+      }
+      if (messagingLimit) {
+        toast.warning(
+          t('toastOverLimit', { limit: messagingLimit, count: totalRecipients }),
+          { duration: 15000 },
         );
       }
       router.push(`/broadcasts/${broadcastId}`);

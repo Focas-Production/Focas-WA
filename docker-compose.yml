@@ -38,6 +38,12 @@ services:
     container_name: wacrm
     restart: unless-stopped
 
+    # On stop/redeploy, Next finishes in-flight requests and background
+    # work before exiting; a running broadcast stops taking recipients,
+    # lets in-flight sends land and hands off to the next container.
+    # Docker's 10 s default can cut that short.
+    stop_grace_period: 30s
+
     # Server-only secrets (SUPABASE_SERVICE_ROLE_KEY, ENCRYPTION_KEY,
     # META_APP_SECRET) are read at runtime — never baked into the image.
     env_file:

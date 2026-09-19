@@ -117,10 +117,17 @@ export const RATE_LIMITS = {
   /** Individual message send. 60/min per user = one per second
    *  sustained, comfortable for a live human typing. */
   send: { limit: 60, windowMs: 60_000 },
-  /** Broadcast dispatch. 5/min per user — even a 1 000-recipient
-   *  broadcast is one call; this caps the rate at which a single user
-   *  can launch campaigns, not the messages inside one. */
+  /** Broadcast dispatch without a campaign prepay (direct API callers
+   *  sending a whole list in one call). 5/min per user caps the rate
+   *  at which a single user can launch campaigns, not the messages
+   *  inside one. */
   broadcast: { limit: 5, windowMs: 60_000 },
+  /** Batch calls inside an already-prepaid dashboard campaign. The
+   *  wizard ships 10 recipients per call with a 1 s pause, so a
+   *  campaign makes up to ~60 calls/min — the `broadcast` budget
+   *  above would fail every batch after the 5th. 120/min leaves
+   *  headroom for two campaigns in parallel. */
+  broadcastBatch: { limit: 120, windowMs: 60_000 },
   /** Typing-indicator pings. The composer client-throttles to one call
    *  per ~20s per conversation (the indicator lives ~25s on the
    *  contact's phone), so 30/min per user only trips on a broken or

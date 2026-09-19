@@ -1,21 +1,24 @@
 import { timingSafeEqual } from 'node:crypto'
-import { NextResponse } from 'next/server'
-import { processDueScheduledBroadcasts } from '@/lib/whatsapp/scheduled-broadcasts'
+import { NextResponse, after } from 'next/server'
+import { scanBroadcastQueue, runQueue } from '@/lib/whatsapp/broadcast-engine'
 
 /**
- * Deliver due scheduled broadcasts. Hit on a schedule (external
- * pinger / VPS crontab, e.g. every minute) — same auth as the
- * automations cron: shared secret via the `x-cron-secret` header,
- * matched against AUTOMATION_CRON_SECRET.
+ * Campaign queue tick. Hit once a minute (external pinger / VPS
+ * crontab) — same auth as the automations cron: shared secret via the
+ * `x-cron-secret` header, matched against AUTOMATION_CRON_SECRET.
  *
  *   * * * * * curl -s -H "x-cron-secret: $SECRET" \
  *       https://wa.focasedu.online/api/broadcasts/cron
  *
- * The claim step inside processDueScheduledBroadcasts (atomic
- * scheduled → sending flip) makes overlapping invocations safe.
- * A big campaign can outlive one invocation's send loop, so we cap
- * at a few broadcasts per tick and let the next tick pick up the
- * rest.
+ * Starts due scheduled campaigns, resumes any whose process died
+ * mid-send (lapsed lease), and settles stopped campaigns whose
+ * process died before refunding. "Send now" campaigns start immediately
+ * without waiting for this tick; the tick is their crash safety net,
+ * so keep it running even if you never schedule campaigns.
+ *
+ * Sending runs after the response (after()), so the pinger never
+ * waits on a campaign; the engine's atomic claims make overlapping
+ * ticks safe.
  */
 export async function GET(request: Request) {
   const expected = process.env.AUTOMATION_CRON_SECRET
@@ -32,11 +35,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  const processed = await processDueScheduledBroadcasts(3)
-  return NextResponse.json({ processed })
+  const queue = await scanBroadcastQueue()
+  after(() => runQueue(queue))
+  return NextResponse.json({ started: queue.run.length, closed: queue.close.length })
 }
-
-// The send loop paces itself (1 s per 10 recipients) — a 1 000-
-// recipient campaign runs ~2 minutes. Opt out of the default route
-// timeout so the fan-out isn't cut off mid-send.
-export const maxDuration = 300

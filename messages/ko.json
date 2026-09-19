@@ -659,7 +659,13 @@
       "scheduledFor": "{when} 예약됨",
       "cancelSchedule": "예약 취소",
       "toastCancelled": "브로드캐스트가 취소되었습니다 — 미발송분은 지갑으로 환불되었습니다.",
-      "toastCancelTooLate": "취소하기에는 너무 늦었습니다 — 이미 전송이 시작되었습니다."
+      "toastCancelTooLate": "취소하기에는 너무 늦었습니다 — 이미 전송이 시작되었습니다.",
+      "stopSending": "전송 중지",
+      "stopping": "중지하는 중…",
+      "toastStopped": "전송이 중지되었습니다. 이미 보낸 메시지는 영향을 받지 않으며, 보내지 않은 메시지는 지갑으로 환불됩니다.",
+      "toastStopFailed": "브로드캐스트를 중지하지 못했습니다: {error}",
+      "sendingProgress": "{total}건 중 {done}건 전송",
+      "sendingHint": "전송은 서버에서 진행됩니다 — 이 페이지를 닫아도 됩니다."
     },
     "new": {
       "title": "새 브로드캐스트",
@@ -675,7 +681,8 @@
       "toastNotLinked": "프로필이 계정에 연결되어 있지 않습니다.",
       "toastFailedDraft": "초안 저장 실패: {error}",
       "toastDraftSaved": "초안이 저장되었습니다",
-      "toastScheduled": "{when}에 브로드캐스트가 예약되었습니다."
+      "toastScheduled": "{when}에 브로드캐스트가 예약되었습니다.",
+      "toastOverLimit": "이 WhatsApp 번호는 24시간 동안 최대 {limit}명에게 메시지를 보낼 수 있는데, 이 브로드캐스트의 수신자는 {count}명입니다. 한도를 넘는 전송은 실패하며 환불됩니다."
     },
     "wizard": {
       "next": "다음",

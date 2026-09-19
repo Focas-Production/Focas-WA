@@ -11,6 +11,7 @@
 
 const META_API_VERSION = 'v21.0'
 const META_API_BASE = `https://graph.facebook.com/${META_API_VERSION}`
+const TEMPLATE_SEND_TIMEOUT_MS = 30_000
 
 export interface MetaSendResult {
   messageId: string
@@ -35,15 +36,35 @@ interface MetaErrorResponse {
   error?: { message?: string; code?: number; type?: string }
 }
 
+/**
+ * A non-2xx Graph API response. `message` is Meta's own text (unchanged
+ * from the plain `Error` this used to be, so message-matching callers
+ * keep working); `status` + `code` let the campaign engine tell a
+ * throttle (130429) or outage (5xx) it should retry from a permanent
+ * per-recipient failure.
+ */
+export class MetaApiError extends Error {
+  readonly status: number
+  readonly code?: number
+  constructor(message: string, status: number, code?: number) {
+    super(message)
+    this.name = 'MetaApiError'
+    this.status = status
+    this.code = code
+  }
+}
+
 async function throwMetaError(response: Response, fallback: string): Promise<never> {
   let message = fallback
+  let code: number | undefined
   try {
     const data = (await response.json()) as MetaErrorResponse
     if (data.error?.message) message = data.error.message
+    if (typeof data.error?.code === 'number') code = data.error.code
   } catch {
     // response body wasn't JSON — keep the fallback
   }
-  throw new Error(message)
+  throw new MetaApiError(message, response.status, code)
 }
 
 // ============================================================
@@ -71,6 +92,73 @@ export async function verifyPhoneNumber(
     await throwMetaError(response, `Meta API error: ${response.status}`)
   }
   return response.json()
+}
+
+export interface PhoneSendingProfile {
+  /** Meta's throughput level ('STANDARD' | 'HIGH' | …), null if unknown. */
+  throughputLevel: string | null
+  /** Also active in the WhatsApp Business app — fixed 20 msg/s. */
+  isCoexistence: boolean
+  /**
+   * Unique users the business portfolio may message outside a
+   * customer-service window per rolling 24 h. `Infinity` for
+   * TIER_UNLIMITED, null when Meta didn't say.
+   */
+  messagingLimit: number | null
+}
+
+/** 'TIER_2K' → 2000, 'TIER_250' → 250, 'TIER_UNLIMITED' → Infinity. */
+export function parseMessagingLimitTier(tier: unknown): number | null {
+  if (typeof tier !== 'string') return null
+  if (/UNLIMITED/i.test(tier)) return Infinity
+  const m = /^TIER_(\d+)(K?)$/i.exec(tier.trim())
+  if (!m) return null
+  return Number(m[1]) * (m[2] ? 1000 : 1)
+}
+
+/**
+ * What a campaign may send through this number: throughput level,
+ * coexistence (both cap messages/second) and the portfolio's 24 h
+ * messaging limit. The limit field is newer than our pinned Graph
+ * version, so it's fetched separately and tolerated missing — only
+ * the throughput call is allowed to throw.
+ */
+export async function getPhoneSendingProfile(
+  args: VerifyPhoneNumberArgs
+): Promise<PhoneSendingProfile> {
+  const { phoneNumberId, accessToken } = args
+  const headers = { Authorization: `Bearer ${accessToken}` }
+
+  const [throughputRes, limitRes] = await Promise.all([
+    fetch(`${META_API_BASE}/${phoneNumberId}?fields=throughput,is_on_biz_app`, { headers }),
+    fetch(
+      `${META_API_BASE}/${phoneNumberId}?fields=whatsapp_business_manager_messaging_limit`,
+      { headers }
+    ).catch(() => null),
+  ])
+  if (!throughputRes.ok) {
+    await throwMetaError(throughputRes, `Meta API error: ${throughputRes.status}`)
+  }
+  const info = (await throughputRes.json()) as {
+    throughput?: { level?: string }
+    is_on_biz_app?: boolean
+  }
+
+  let messagingLimit: number | null = null
+  if (limitRes?.ok) {
+    const limit = (await limitRes.json().catch(() => null)) as {
+      whatsapp_business_manager_messaging_limit?: string
+    } | null
+    messagingLimit = parseMessagingLimitTier(
+      limit?.whatsapp_business_manager_messaging_limit
+    )
+  }
+
+  return {
+    throughputLevel: info.throughput?.level ?? null,
+    isCoexistence: info.is_on_biz_app === true,
+    messagingLimit,
+  }
 }
 
 // ============================================================
@@ -490,6 +578,9 @@ export async function sendTemplateMessage(
       Authorization: `Bearer ${accessToken}`,
     },
     body: JSON.stringify(body),
+    // A hung connection must not stall a campaign lane (or an inbox
+    // send) for undici's 5-minute default.
+    signal: AbortSignal.timeout(TEMPLATE_SEND_TIMEOUT_MS),
   })
   if (!response.ok) {
     await throwMetaError(response, `Meta API error: ${response.status}`)

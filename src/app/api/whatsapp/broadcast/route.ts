@@ -81,14 +81,6 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    // Per-user broadcast budget. Note: this limits how often a user
-    // can *start* a campaign, not how many messages go out inside
-    // one — the fan-out loop below runs without additional gating.
-    const limit = checkRateLimit(`broadcast:${user.id}`, RATE_LIMITS.broadcast)
-    if (!limit.success) {
-      return rateLimitResponse(limit)
-    }
-
     // Resolve the caller's account_id. whatsapp_config + templates
     // + broadcasts are all account-scoped post-multi-user, so the
     // old `.eq('user_id', user.id)` filters miss every row created
@@ -204,6 +196,18 @@ export async function POST(request: Request) {
           { status: 402 },
         )
       }
+    }
+
+    // Per-user budget. A prepaid dashboard campaign arrives as many
+    // 10-recipient batch calls, so it gets the larger batch budget;
+    // a direct call sends its whole list in one request and keeps the
+    // tight campaign-launch budget. The fan-out loop below runs
+    // without additional gating either way.
+    const limit = campaignPrepaid
+      ? checkRateLimit(`broadcast-batch:${user.id}`, RATE_LIMITS.broadcastBatch)
+      : checkRateLimit(`broadcast:${user.id}`, RATE_LIMITS.broadcast)
+    if (!limit.success) {
+      return rateLimitResponse(limit)
     }
 
     const { category: chargeCategory, pricePaise } = await getTemplateCharge(

@@ -7,6 +7,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Contact } from '@/types';
+import { selectAll } from '@/lib/supabase/select-all';
 
 /**
  * Variable mapping — each template placeholder (by key, usually "1",
@@ -72,17 +73,26 @@ export async function fetchCustomValueIndex(
   const index: CustomValueIndex = new Map();
   if (contactIds.length === 0) return index;
 
-  // Supabase PostgREST caps the .in(...) IN-clause roughly at 1000
-  // values. Page through to stay safe.
-  const PAGE = 500;
+  // Chunk the IN list (URL length), and page each chunk: a contact
+  // has one row per custom field, so 300 contacts × 4 fields already
+  // exceeds PostgREST's 1,000-row response cap.
+  const PAGE = 300;
   for (let i = 0; i < contactIds.length; i += PAGE) {
     const slice = contactIds.slice(i, i + PAGE);
-    const { data } = await supabase
-      .from('contact_custom_values')
-      .select('contact_id, custom_field_id, value')
-      .in('contact_id', slice);
+    const data = await selectAll<{
+      contact_id: string;
+      custom_field_id: string;
+      value: string | null;
+    }>((from, to) =>
+      supabase
+        .from('contact_custom_values')
+        .select('contact_id, custom_field_id, value')
+        .in('contact_id', slice)
+        .order('id')
+        .range(from, to),
+    );
 
-    for (const row of data ?? []) {
+    for (const row of data) {
       const bucket = index.get(row.contact_id) ?? new Map<string, string>();
       bucket.set(row.custom_field_id, row.value ?? '');
       index.set(row.contact_id, bucket);

@@ -9,6 +9,60 @@ Versions follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Pre-1.0, `MINOR` bumps cover new modules; `PATCH` bumps cover bug fixes
 and polish.
 
+## [Unreleased]
+
+Server-side campaign engine — broadcasts no longer depend on the
+browser.
+
+> **Migration required:** apply `supabase/migrations/044_broadcast_engine.sql`
+> (adds `broadcasts.locked_until` and `broadcast_recipients.attempted_at`).
+> Keep the once-a-minute pinger on `/api/broadcasts/cron` running — it
+> now also resumes campaigns interrupted by a restart. Optional:
+> `BROADCAST_MAX_MPS` (see `.env.local.example`).
+
+### Changed
+
+- **"Send now" runs on the server.** The wizard makes one request
+  (`POST /api/broadcasts/launch`) and the campaign is sent by the
+  server; the tab can be closed. Previously the browser sent 10
+  recipients per request and every batch after the 5th in a minute
+  failed with "Rate limit exceeded".
+- **Parallel, paced sending.** Recipients go out on parallel lanes at
+  up to 40 msg/s (`BROADCAST_MAX_MPS`), held under 80% of Meta's
+  per-number throughput (80/s, or 20/s for coexistence numbers). 2,500
+  recipients take about a minute (about 3 minutes on a coexistence
+  number), versus 15+ minutes before.
+- **Retries.** Meta throttles (130429) and outages (5xx, 131000,
+  133004, network errors) are retried with backoff. Account-wide errors
+  (expired token, payment issue, template paused or deleted) stop the
+  campaign immediately and refund the rest, as does a run of 25 failed
+  sends with nothing delivered.
+- **Crash-safe.** A campaign interrupted by a deploy or crash resumes
+  on the next cron tick. Recipients that were mid-send are marked
+  "Interrupted" rather than messaged twice. Campaigns interrupted for
+  more than an hour are closed and refunded instead of resumed.
+- **Stop sending.** The broadcast detail page shows live progress and a
+  "Stop sending" button. Unsent recipients are refunded.
+- **Messaging-limit warning.** The wizard warns when the audience is
+  larger than the number's 24-hour unique-user messaging limit.
+- **Campaign messages show in the inbox.** Each sent message is
+  copied into the contact's conversation, with variables filled in,
+  and a conversation is created if the contact has none. Delivered and
+  read ticks follow. Before this, a customer replying to a campaign
+  appeared in the inbox with no record of what they were replying to.
+  The copies are marked as automated sends, like automation messages,
+  so they don't count toward agent message stats.
+
+### Fixed
+
+- Audiences, recipient lists and custom-field values over 1,000 rows
+  were silently cut off at PostgREST's response cap (1,000 rows by
+  default on Supabase). With the default setting, a 2,500-contact
+  campaign reached only 1,000 people, and the detail page listed only
+  1,000 recipients.
+- Contacts sharing a phone number no longer get the same campaign
+  twice.
+
 ## [0.9.0] — 2026-08-08
 
 Prepaid wallet, scheduled broadcasts, and broadcast-audience fixes.

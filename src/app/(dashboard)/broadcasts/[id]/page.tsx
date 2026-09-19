@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
+import { selectAll } from '@/lib/supabase/select-all';
 import { Broadcast, BroadcastRecipient, RecipientStatus } from '@/types';
 import { Button } from '@/components/ui/button';
 import {
@@ -33,6 +34,7 @@ import {
   ChevronDown,
   Trash2,
   CalendarClock,
+  CircleStop,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -123,6 +125,11 @@ const RECIPIENT_STATUSES: readonly RecipientStatus[] = [
   'failed',
 ];
 
+/** Campaign counts refresh this often while it's scheduled or sending. */
+const LIVE_POLL_MS = 3000;
+/** …and the (heavier) recipient table every Nth poll. */
+const RECIPIENT_REFRESH_EVERY = 5;
+
 
 export default function BroadcastDetailPage() {
   const params = useParams();
@@ -141,29 +148,41 @@ export default function BroadcastDetailPage() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [stopping, setStopping] = useState(false);
+
+  // Paged: a plain select stops at PostgREST's 1,000-row cap, which
+  // hid most of a large campaign's recipients.
+  const loadRecipients = useCallback(async () => {
+    const supabase = createClient();
+    const recs = await selectAll<BroadcastRecipient>((from, to) =>
+      supabase
+        .from('broadcast_recipients')
+        .select('*, contact:contacts(*)')
+        .eq('broadcast_id', broadcastId)
+        .order('created_at', { ascending: false })
+        .order('id')
+        .range(from, to),
+    );
+    setRecipients(recs);
+  }, [broadcastId]);
+
+  const loadBroadcast = useCallback(async () => {
+    const supabase = createClient();
+    const { data, error: bcError } = await supabase
+      .from('broadcasts')
+      .select('*')
+      .eq('id', broadcastId)
+      .single();
+    if (bcError) throw bcError;
+    setBroadcast(data);
+    return data as Broadcast;
+  }, [broadcastId]);
 
   useEffect(() => {
     async function fetchData() {
       try {
-        const supabase = createClient();
-
-        const { data: bc, error: bcError } = await supabase
-          .from('broadcasts')
-          .select('*')
-          .eq('id', broadcastId)
-          .single();
-
-        if (bcError) throw bcError;
-        setBroadcast(bc);
-
-        const { data: recs, error: recsError } = await supabase
-          .from('broadcast_recipients')
-          .select('*, contact:contacts(*)')
-          .eq('broadcast_id', broadcastId)
-          .order('created_at', { ascending: false });
-
-        if (recsError) throw recsError;
-        setRecipients(recs ?? []);
+        await loadBroadcast();
+        await loadRecipients();
       } catch (err) {
         setError(err instanceof Error ? err.message : t('notFound'));
       } finally {
@@ -172,7 +191,26 @@ export default function BroadcastDetailPage() {
     }
 
     fetchData();
-  }, [broadcastId]);
+  }, [loadBroadcast, loadRecipients]);
+
+  // Sending happens server-side; follow it live while it runs, then
+  // take one final recipient snapshot when it finishes.
+  const isLive = broadcast?.status === 'sending' || broadcast?.status === 'scheduled';
+  useEffect(() => {
+    if (!isLive) return;
+    let tick = 0;
+    const timer = setInterval(async () => {
+      tick++;
+      try {
+        const latest = await loadBroadcast();
+        const stillLive = latest.status === 'sending' || latest.status === 'scheduled';
+        if (!stillLive || tick % RECIPIENT_REFRESH_EVERY === 0) await loadRecipients();
+      } catch {
+        // transient — the next tick retries
+      }
+    }, LIVE_POLL_MS);
+    return () => clearInterval(timer);
+  }, [isLive, loadBroadcast, loadRecipients]);
 
   const filteredRecipients = useMemo(
     () =>
@@ -251,6 +289,35 @@ export default function BroadcastDetailPage() {
       );
     } finally {
       setCancelling(false);
+    }
+  }
+
+  /**
+   * Stop a campaign mid-send. The server stops handing out recipients
+   * immediately; messages already in flight finish, and the unsent
+   * remainder is refunded once the engine winds down (~5 s) — hence
+   * the delayed refresh.
+   */
+  async function handleStop() {
+    setStopping(true);
+    try {
+      const res = await fetch(`/api/broadcasts/${broadcastId}/cancel`, {
+        method: 'POST',
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        toast.error(t('toastStopFailed', { error: data?.error ?? res.statusText }));
+        return;
+      }
+      toast.success(t('toastStopped'));
+      setBroadcast((prev) => (prev ? { ...prev, status: 'cancelled' } : prev));
+      setTimeout(() => {
+        loadBroadcast()
+          .then(() => loadRecipients())
+          .catch(() => {});
+      }, 6000);
+    } finally {
+      setStopping(false);
     }
   }
 
@@ -405,6 +472,22 @@ export default function BroadcastDetailPage() {
             {t('cancelSchedule')}
           </Button>
         )}
+        {broadcast.status === 'sending' && !confirmDelete && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleStop}
+            disabled={stopping}
+            className="border-red-500/30 bg-transparent text-red-400 hover:bg-red-500/10 disabled:opacity-50"
+          >
+            {stopping ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <CircleStop className="h-3.5 w-3.5" />
+            )}
+            {stopping ? t('stopping') : t('stopSending')}
+          </Button>
+        )}
         {confirmDelete ? (
           <div className="flex items-center gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-sm">
             <span className="text-red-300">{t('deletePrompt')}</span>
@@ -444,6 +527,40 @@ export default function BroadcastDetailPage() {
           </Button>
         )}
       </div>
+
+      {broadcast.status === 'sending' && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <div className="mb-2 flex items-center justify-between text-sm">
+            <span className="inline-flex items-center gap-2 text-foreground">
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+              {t('sendingProgress', {
+                done: (broadcast.sent_count + broadcast.failed_count).toLocaleString(),
+                total: broadcast.total_recipients.toLocaleString(),
+              })}
+            </span>
+            <span className="text-xs text-muted-foreground">{t('sendingHint')}</span>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-muted">
+            <div
+              className="h-2 rounded-full bg-primary transition-[width] duration-500"
+              style={{
+                width: `${
+                  broadcast.total_recipients > 0
+                    ? Math.min(
+                        100,
+                        Math.round(
+                          ((broadcast.sent_count + broadcast.failed_count) /
+                            broadcast.total_recipients) *
+                            100,
+                        ),
+                      )
+                    : 0
+                }%`,
+              }}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Stats — 6 cards: Total / Sent / Delivered / Read / Replied / Failed */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">

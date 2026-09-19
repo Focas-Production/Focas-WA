@@ -102,6 +102,14 @@ describe("RATE_LIMITS presets", () => {
     expect(RATE_LIMITS.send.windowMs).toBe(60_000);
     expect(RATE_LIMITS.broadcast.windowMs).toBe(60_000);
   });
+
+  it("broadcast batch budget covers a wizard campaign's ~60 calls/min", async () => {
+    const { RATE_LIMITS } = await import("./rate-limit");
+    // The wizard sends one 10-recipient batch per ≥1 s, so a minute
+    // of sending is at most 60 calls — the batch budget must fit that.
+    expect(RATE_LIMITS.broadcastBatch.limit).toBeGreaterThanOrEqual(60);
+    expect(RATE_LIMITS.broadcastBatch.windowMs).toBe(60_000);
+  });
 });
 
 afterEach(() => {
