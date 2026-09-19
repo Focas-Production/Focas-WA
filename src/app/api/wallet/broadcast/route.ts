@@ -47,7 +47,11 @@ export async function POST(request: Request) {
   }
 
   if (action === 'settle') {
-    await settleBroadcastCharge(caller.accountId, broadcastId)
+    // Callers (delete-a-cancelled-broadcast) keep the row unless this
+    // confirms, since the refund is computed from it.
+    if (!(await settleBroadcastCharge(caller.accountId, broadcastId))) {
+      return NextResponse.json({ error: 'Wallet settle failed — try again.' }, { status: 500 })
+    }
     return NextResponse.json({ success: true })
   }
 

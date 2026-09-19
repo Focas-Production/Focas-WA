@@ -664,6 +664,7 @@
       "stopping": "중지하는 중…",
       "toastStopped": "전송이 중지되었습니다. 이미 보낸 메시지는 영향을 받지 않으며, 보내지 않은 메시지는 지갑으로 환불됩니다.",
       "toastStopFailed": "브로드캐스트를 중지하지 못했습니다: {error}",
+      "toastStillStopping": "브로드캐스트를 아직 중지하는 중입니다. 몇 초 후 다시 시도하세요.",
       "sendingProgress": "{total}건 중 {done}건 전송",
       "sendingHint": "전송은 서버에서 진행됩니다 — 이 페이지를 닫아도 됩니다."
     },

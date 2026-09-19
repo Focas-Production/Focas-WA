@@ -254,30 +254,21 @@ export default function BroadcastDetailPage() {
   async function handleCancelSchedule() {
     setCancelling(true);
     try {
-      const supabase = createClient();
-      // Guarded flip — if the cron claimed it in the meantime
-      // (scheduled → sending), this matches 0 rows and we bail.
-      const { data: claimed } = await supabase
-        .from('broadcasts')
-        .update({ status: 'cancelled' })
-        .eq('id', broadcastId)
-        .eq('status', 'scheduled')
-        .select('id')
-        .maybeSingle();
-      if (!claimed) {
-        toast.error(t('toastCancelTooLate'));
+      // Server-side so the refund is retried if it fails (see the
+      // cancel route). 409 = the engine claimed it first.
+      const res = await fetch(`/api/broadcasts/${broadcastId}/cancel`, {
+        method: 'POST',
+      }).catch(() => null);
+      if (!res?.ok) {
+        if (res?.status === 409) {
+          toast.error(t('toastCancelTooLate'));
+        } else {
+          const data = await res?.json().catch(() => null);
+          toast.error(t('toastStopFailed', { error: data?.error ?? 'network error' }));
+        }
+        await loadBroadcast().catch(() => {});
         return;
       }
-      await supabase
-        .from('broadcast_recipients')
-        .update({ status: 'failed', error_message: 'Cancelled' })
-        .eq('broadcast_id', broadcastId)
-        .eq('status', 'pending');
-      await fetch('/api/wallet/broadcast', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ broadcast_id: broadcastId, action: 'settle' }),
-      }).catch(() => {});
       toast.success(t('toastCancelled'));
       setBroadcast((prev) => (prev ? { ...prev, status: 'cancelled' } : prev));
       setRecipients((prev) =>
@@ -324,14 +315,29 @@ export default function BroadcastDetailPage() {
   async function handleDelete() {
     setDeleting(true);
     const supabase = createClient();
+    // Decide on the row as it is NOW, not as last rendered: a campaign
+    // just stopped is still winding down (in-flight sends landing, its
+    // refund pending) while it holds the engine lease. Deleting then
+    // would drop the row the refund is computed from.
+    const { data: current } = await supabase
+      .from('broadcasts')
+      .select('status, locked_until')
+      .eq('id', broadcastId)
+      .maybeSingle();
+    if (current?.locked_until) {
+      setDeleting(false);
+      toast.error(t('toastStillStopping'));
+      return;
+    }
+    const status = current?.status ?? broadcast?.status;
     // A scheduled broadcast holds a prepaid campaign debit, and the
     // settle reads the broadcasts row — once the row is deleted the
     // refund can never be issued. So cancel + settle BEFORE deleting,
     // and keep the row if the settle can't be confirmed. 'cancelled'
     // is included so a retry after a failed settle still refunds
     // (settle is idempotent per campaign — no double refund).
-    if (broadcast?.status === 'scheduled' || broadcast?.status === 'cancelled') {
-      if (broadcast.status === 'scheduled') {
+    if (status === 'scheduled' || status === 'cancelled') {
+      if (status === 'scheduled') {
         // Guarded flip — if the cron claimed it in the meantime
         // (scheduled → sending), this matches 0 rows and we bail.
         const { data: claimed } = await supabase
@@ -347,11 +353,13 @@ export default function BroadcastDetailPage() {
           return;
         }
       }
+      // Never-claimed rows only: a claimed one was handed to Meta.
       await supabase
         .from('broadcast_recipients')
         .update({ status: 'failed', error_message: 'Cancelled' })
         .eq('broadcast_id', broadcastId)
-        .eq('status', 'pending');
+        .eq('status', 'pending')
+        .is('attempted_at', null);
       const settled = await fetch('/api/wallet/broadcast', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -472,7 +480,9 @@ export default function BroadcastDetailPage() {
             {t('cancelSchedule')}
           </Button>
         )}
-        {broadcast.status === 'sending' && !confirmDelete && (
+        {/* Only engine-run campaigns (they hold a lease) can stop
+            mid-send; API/legacy sends would keep going regardless. */}
+        {broadcast.status === 'sending' && broadcast.locked_until && !confirmDelete && (
           <Button
             variant="outline"
             size="sm"

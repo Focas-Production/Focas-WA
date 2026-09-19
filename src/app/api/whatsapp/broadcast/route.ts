@@ -22,7 +22,6 @@ import {
   chargeTemplateSend,
   stampChargeReference,
   refundTemplateCharge,
-  hasBroadcastDebit,
   WalletError,
 } from '@/lib/wallet/wallet'
 
@@ -81,6 +80,14 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
+    // Per-user broadcast budget. Note: this limits how often a user
+    // can *start* a campaign, not how many messages go out inside
+    // one — the fan-out loop below runs without additional gating.
+    const limit = checkRateLimit(`broadcast:${user.id}`, RATE_LIMITS.broadcast)
+    if (!limit.success) {
+      return rateLimitResponse(limit)
+    }
+
     // Resolve the caller's account_id. whatsapp_config + templates
     // + broadcasts are all account-scoped post-multi-user, so the
     // old `.eq('user_id', user.id)` filters miss every row created
@@ -105,8 +112,18 @@ export async function POST(request: Request) {
       template_name,
       template_language,
       template_params,
-      charged_broadcast_id,
     } = body
+
+    // Batches from a dashboard tab still running the pre-engine
+    // sender: that campaign is already paid for, so charging these
+    // again per message would bill it twice. Refuse; the tab fails
+    // the remainder and its settle refunds them.
+    if (body.charged_broadcast_id) {
+      return NextResponse.json(
+        { error: 'This page is out of date — reload it and relaunch the broadcast.' },
+        { status: 409 },
+      )
+    }
 
     // Normalize to a list of {phone, params} regardless of shape.
     let recipients: NewRecipient[]
@@ -178,38 +195,11 @@ export async function POST(request: Request) {
     }
     const templateRow = rawTemplateRow ?? null
 
-    // Wallet: template sends are prepaid. Two modes:
-    //   - Campaign-prepaid (dashboard broadcasts): the wizard already
-    //     debited the whole campaign in one ledger row via
-    //     /api/wallet/broadcast, and passes `charged_broadcast_id`.
-    //     Verify that debit exists, then skip per-message charging —
-    //     unsent recipients are refunded in one aggregate settle row.
-    //   - Per-message (direct API callers without a campaign charge):
-    //     each recipient is atomically debited before its Meta call
-    //     and refunded if the send fails.
-    let campaignPrepaid = false
-    if (typeof charged_broadcast_id === 'string' && charged_broadcast_id) {
-      campaignPrepaid = await hasBroadcastDebit(accountId, charged_broadcast_id)
-      if (!campaignPrepaid) {
-        return NextResponse.json(
-          { error: 'Broadcast is not prepaid — charge it via /api/wallet/broadcast first.' },
-          { status: 402 },
-        )
-      }
-    }
-
-    // Per-user budget. A prepaid dashboard campaign arrives as many
-    // 10-recipient batch calls, so it gets the larger batch budget;
-    // a direct call sends its whole list in one request and keeps the
-    // tight campaign-launch budget. The fan-out loop below runs
-    // without additional gating either way.
-    const limit = campaignPrepaid
-      ? checkRateLimit(`broadcast-batch:${user.id}`, RATE_LIMITS.broadcastBatch)
-      : checkRateLimit(`broadcast:${user.id}`, RATE_LIMITS.broadcast)
-    if (!limit.success) {
-      return rateLimitResponse(limit)
-    }
-
+    // Wallet: each recipient is atomically debited before its Meta
+    // call and refunded if the send fails. (Dashboard campaigns no
+    // longer come through here — they're prepaid and sent by the
+    // campaign engine — so there is no "already paid" bypass: it let
+    // any old campaign id send new lists for free.)
     const { category: chargeCategory, pricePaise } = await getTemplateCharge(
       accountId,
       template_name,
@@ -244,31 +234,28 @@ export async function POST(request: Request) {
         continue
       }
 
-      let chargeRef: string | null = null
-      if (!campaignPrepaid) {
-        chargeRef = `prep:${crypto.randomUUID()}`
-        try {
-          await chargeTemplateSend({
-            accountId,
-            reference: chargeRef,
-            category: chargeCategory,
-            pricePaise,
-            description: `Template "${template_name}" to ${sanitized}`,
-            createdBy: user.id,
+      const chargeRef = `prep:${crypto.randomUUID()}`
+      try {
+        await chargeTemplateSend({
+          accountId,
+          reference: chargeRef,
+          category: chargeCategory,
+          pricePaise,
+          description: `Template "${template_name}" to ${sanitized}`,
+          createdBy: user.id,
+        })
+      } catch (err) {
+        if (err instanceof WalletError && err.code === 'insufficient_balance') {
+          walletExhausted = true
+          results.push({
+            phone: recipient.phone,
+            status: 'failed',
+            error: 'Insufficient wallet balance',
           })
-        } catch (err) {
-          if (err instanceof WalletError && err.code === 'insufficient_balance') {
-            walletExhausted = true
-            results.push({
-              phone: recipient.phone,
-              status: 'failed',
-              error: 'Insufficient wallet balance',
-            })
-            failedCount++
-            continue
-          }
-          throw err
+          failedCount++
+          continue
         }
+        throw err
       }
 
       // Retry with phone variants on "not in allowed list" so numbers
@@ -305,7 +292,7 @@ export async function POST(request: Request) {
       }
 
       if (sentMessageId) {
-        if (chargeRef) await stampChargeReference(chargeRef, sentMessageId)
+        await stampChargeReference(chargeRef, sentMessageId)
         results.push({
           phone: recipient.phone,
           status: 'sent',
@@ -322,7 +309,7 @@ export async function POST(request: Request) {
           source: 'broadcast',
         })
       } else {
-        if (chargeRef) await refundTemplateCharge(chargeRef, 'Meta send failed')
+        await refundTemplateCharge(chargeRef, 'Meta send failed')
         console.error(
           `Failed to send broadcast to ${recipient.phone}:`,
           lastError

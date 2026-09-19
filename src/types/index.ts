@@ -397,6 +397,11 @@ export interface Broadcast {
   audience_filter?: Record<string, unknown>;
   scheduled_at?: string;
   status: BroadcastStatus;
+  /**
+   * Campaign-engine lease (migration 044): set while the engine is
+   * sending or winding the campaign down, null once it's closed.
+   */
+  locked_until?: string | null;
   total_recipients: number;
   sent_count: number;
   delivered_count: number;

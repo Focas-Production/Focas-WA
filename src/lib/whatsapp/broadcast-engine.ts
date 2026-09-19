@@ -138,14 +138,26 @@ export function classifySendError(err: unknown): SendErrorKind {
     }
     return 'permanent'
   }
-  // fetch() rejects with a TypeError when the request never got a
-  // response (DNS, reset, refused). A timeout (AbortSignal) is NOT
-  // retried: Meta may have accepted the message before we gave up.
-  if (err instanceof TypeError && /fetch failed|network|socket/i.test(err.message)) {
-    return 'transient'
+  // fetch() rejects with TypeError('fetch failed') both when the
+  // connection never opened and when it dropped after the request was
+  // written — and in the second case Meta may already have sent the
+  // message. Retry only the never-connected causes; like a timeout,
+  // anything else is failed rather than risk a duplicate.
+  if (err instanceof TypeError) {
+    const code = (err as { cause?: { code?: unknown } }).cause?.code
+    if (typeof code === 'string' && CONNECT_ERROR_CODES.has(code)) return 'transient'
   }
   return 'permanent'
 }
+
+const CONNECT_ERROR_CODES = new Set([
+  'ECONNREFUSED',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'ENETUNREACH',
+  'EHOSTUNREACH',
+  'UND_ERR_CONNECT_TIMEOUT',
+])
 
 function errorText(err: unknown): string {
   if (err instanceof Error && err.name === 'TimeoutError') {
@@ -312,7 +324,7 @@ async function claimBroadcast(
   const db = supabaseAdmin()
   const nowIso = new Date().toISOString()
 
-  const { data: fresh } = await db
+  const { data: fresh, error: freshErr } = await db
     .from('broadcasts')
     .update({ status: 'sending', locked_until: leaseUntil() })
     .eq('id', id)
@@ -320,9 +332,12 @@ async function claimBroadcast(
     .lte('scheduled_at', nowIso)
     .select(BROADCAST_COLUMNS)
     .maybeSingle()
+  // Loud on purpose: e.g. migration 044 not applied makes every claim
+  // fail here, and campaigns would otherwise sit 'scheduled' silently.
+  if (freshErr) throw new Error(`claiming ${id}: ${freshErr.message}`)
   if (fresh) return { row: fresh as ClaimedBroadcast, resumed: false }
 
-  const { data: stale } = await db
+  const { data: stale, error: staleErr } = await db
     .from('broadcasts')
     .update({ locked_until: leaseUntil() })
     .eq('id', id)
@@ -330,6 +345,7 @@ async function claimBroadcast(
     .lt('locked_until', nowIso)
     .select(BROADCAST_COLUMNS)
     .maybeSingle()
+  if (staleErr) throw new Error(`resuming ${id}: ${staleErr.message}`)
   if (stale) return { row: stale as ClaimedBroadcast, resumed: true }
 
   return null
@@ -352,7 +368,7 @@ export async function scanBroadcastQueue(): Promise<BroadcastQueue> {
   const now = Date.now()
   const nowIso = new Date(now).toISOString()
 
-  const [{ data: due }, { data: stale }] = await Promise.all([
+  const [{ data: due, error: dueErr }, { data: stale, error: staleErr }] = await Promise.all([
     db
       .from('broadcasts')
       .select('id')
@@ -369,6 +385,9 @@ export async function scanBroadcastQueue(): Promise<BroadcastQueue> {
       .lt('locked_until', nowIso)
       .limit(20),
   ])
+  if (dueErr || staleErr) {
+    throw new Error(`scanning the campaign queue: ${(dueErr ?? staleErr)!.message}`)
+  }
 
   const resumable: string[] = []
   const close: BroadcastQueue['close'] = []
@@ -425,7 +444,7 @@ async function closeBroadcast(id: string, status: 'sending' | 'cancelled'): Prom
     status === 'sending'
       ? new Date(Date.now() - MAX_RESUME_AGE_MS).toISOString()
       : new Date().toISOString()
-  const { data } = await db
+  const { data, error } = await db
     .from('broadcasts')
     .update({ locked_until: leaseUntil() })
     .eq('id', id)
@@ -433,6 +452,7 @@ async function closeBroadcast(id: string, status: 'sending' | 'cancelled'): Prom
     .lt('locked_until', lapsedBefore)
     .select('id, account_id')
     .maybeSingle()
+  if (error) throw new Error(`claiming ${id} to close: ${error.message}`)
   if (!data) return
   await failUnsent(id, INTERRUPTED_MESSAGE, true)
   await failUnsent(id, status === 'cancelled' ? CANCELLED_MESSAGE : ABANDONED_MESSAGE, false)
@@ -478,22 +498,38 @@ async function failUnsent(
  * Refund never-sent recipients (one ledger row) and set the final
  * status — 'sent' if anything reached Meta. A cancelled campaign keeps
  * its 'cancelled' status.
+ *
+ * The lease is cleared last and only once everything else landed:
+ * throwing leaves it to lapse, so the cron retries the close (the
+ * settle is idempotent) instead of a campaign stuck 'sending' with no
+ * lease or a refund that is never issued.
  */
 async function finish(broadcastId: string, accountId: string): Promise<void> {
   const db = supabaseAdmin()
-  await settleBroadcastCharge(accountId, broadcastId)
+  if (!(await settleBroadcastCharge(accountId, broadcastId))) {
+    throw new Error(`settling the wallet for ${broadcastId} failed`)
+  }
 
-  const { count } = await db
+  const { count, error: countErr } = await db
     .from('broadcast_recipients')
     .select('id', { count: 'exact', head: true })
     .eq('broadcast_id', broadcastId)
     .not('whatsapp_message_id', 'is', null)
-  await db
+  if (countErr) throw new Error(`counting sent recipients: ${countErr.message}`)
+
+  const { error: statusErr } = await db
     .from('broadcasts')
-    .update({ status: (count ?? 0) > 0 ? 'sent' : 'failed' })
+    .update({ status: (count ?? 0) > 0 ? 'sent' : 'failed', locked_until: null })
     .eq('id', broadcastId)
     .eq('status', 'sending')
-  await db.from('broadcasts').update({ locked_until: null }).eq('id', broadcastId)
+  if (statusErr) throw new Error(`closing ${broadcastId}: ${statusErr.message}`)
+
+  // Cancelled campaigns keep their status; just release the lease.
+  const { error: leaseErr } = await db
+    .from('broadcasts')
+    .update({ locked_until: null })
+    .eq('id', broadcastId)
+  if (leaseErr) throw new Error(`releasing ${broadcastId}: ${leaseErr.message}`)
 }
 
 /**

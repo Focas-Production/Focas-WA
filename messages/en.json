@@ -665,6 +665,7 @@
       "stopping": "Stopping…",
       "toastStopped": "Sending stopped. Messages already sent aren't affected; unsent ones are refunded to your wallet.",
       "toastStopFailed": "Couldn't stop the broadcast: {error}",
+      "toastStillStopping": "This broadcast is still stopping. Try again in a few seconds.",
       "sendingProgress": "Sending {done} of {total}",
       "sendingHint": "Sending runs on the server — you can close this page."
     },

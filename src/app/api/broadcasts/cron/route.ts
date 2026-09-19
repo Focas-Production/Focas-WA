@@ -35,7 +35,15 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  const queue = await scanBroadcastQueue()
-  after(() => runQueue(queue))
-  return NextResponse.json({ started: queue.run.length, closed: queue.close.length })
+  try {
+    const queue = await scanBroadcastQueue()
+    after(() => runQueue(queue))
+    return NextResponse.json({ started: queue.run.length, closed: queue.close.length })
+  } catch (err) {
+    console.error('[broadcasts/cron] queue scan failed:', err)
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : 'queue scan failed' },
+      { status: 500 },
+    )
+  }
 }

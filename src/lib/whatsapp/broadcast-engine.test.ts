@@ -122,6 +122,7 @@ vi.mock('@/lib/wallet/wallet', () => {
     }),
     settleBroadcastCharge: vi.fn(async (_account: string, id: string) => {
       h.settled.push(id)
+      return true
     }),
   }
 })
@@ -480,7 +481,12 @@ describe('classifySendError', () => {
     [new MetaApiError('(#131030) Recipient phone number not in allowed list', 400, 131030), 'recipient_not_allowed'],
     [new MetaApiError('undeliverable', 400, 131026), 'permanent'],
     [new MetaApiError('marketing limit', 400, 131049), 'permanent'],
-    [new TypeError('fetch failed'), 'transient'],
+    // Connection never opened — safe to retry.
+    [Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } }), 'transient'],
+    [Object.assign(new TypeError('fetch failed'), { cause: { code: 'UND_ERR_CONNECT_TIMEOUT' } }), 'transient'],
+    // Dropped after the request went out — Meta may have it; don't resend.
+    [Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNRESET' } }), 'permanent'],
+    [new TypeError('fetch failed'), 'permanent'],
     [Object.assign(new Error('aborted'), { name: 'TimeoutError' }), 'permanent'],
   ])('%s → %s', (err, kind) => {
     expect(classifySendError(err)).toBe(kind)

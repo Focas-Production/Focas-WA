@@ -124,15 +124,16 @@ export async function chargeTemplateSend(params: {
 /**
  * Refund a known amount (aggregate campaign settle, or one webhook-
  * reported delivery failure). Idempotent per reference; best-effort —
- * failures are logged, never thrown.
+ * failures are logged, never thrown. Resolves true when the refund
+ * exists afterwards (issued now, or already issued earlier).
  */
 export async function refundWalletAmount(params: {
   accountId: string
   amountPaise: number
   reference: string
   description: string
-}): Promise<void> {
-  if (params.amountPaise <= 0) return
+}): Promise<boolean> {
+  if (params.amountPaise <= 0) return true
   try {
     const { error } = await supabaseAdmin().rpc('wallet_credit', {
       p_account_id: params.accountId,
@@ -145,9 +146,12 @@ export async function refundWalletAmount(params: {
     })
     if (error && !error.message.includes('duplicate')) {
       console.error('[wallet] refund failed:', error.message)
+      return false
     }
+    return true
   } catch (err) {
     console.error('[wallet] refund failed:', err)
+    return false
   }
 }
 
@@ -225,49 +229,84 @@ export async function hasBroadcastDebit(
 }
 
 /**
+ * The campaign's up-front debit in paise; null when it was never
+ * charged. Throws on a lookup error so callers never mistake "couldn't
+ * read the ledger" for "nothing was paid".
+ */
+async function getBroadcastDebitPaise(
+  accountId: string,
+  broadcastId: string,
+): Promise<number | null> {
+  const { data, error } = await supabaseAdmin()
+    .from('wallet_transactions')
+    .select('amount_paise')
+    .eq('account_id', accountId)
+    .eq('type', 'debit')
+    .eq('reference_id', `broadcast:${broadcastId}`)
+    .limit(1)
+    .maybeSingle()
+  if (error) throw new Error(`debit lookup failed: ${error.message}`)
+  return data ? Number(data.amount_paise) : null
+}
+
+/**
  * Aggregate settle after a campaign's fan-out: refund, in ONE ledger
  * row, every recipient that never reached Meta (status `failed` with
  * no wamid). Recipients Meta accepted but later failed are refunded
  * individually by the webhook (keyed by wamid), so the two sets are
  * disjoint. Idempotent per broadcast — reference `broadcast:<id>`
- * allows a single refund row. Best-effort; never throws.
+ * allows a single refund row.
+ *
+ * Only money actually taken is given back: nothing without a campaign
+ * debit, never more than the debit. Recipient rows are writable by any
+ * agent (RLS), so counting them alone would let a hand-made campaign
+ * mint wallet credit.
+ *
+ * Best-effort; never throws. Resolves false when the settle couldn't
+ * complete and should be retried.
  */
 export async function settleBroadcastCharge(
   accountId: string,
   broadcastId: string,
-): Promise<void> {
+): Promise<boolean> {
   try {
     const db = supabaseAdmin()
-    const { data: broadcast } = await db
+    const { data: broadcast, error: broadcastErr } = await db
       .from('broadcasts')
       .select('name, template_name, template_language')
       .eq('id', broadcastId)
       .eq('account_id', accountId)
       .maybeSingle()
-    if (!broadcast) return
+    if (broadcastErr) throw new Error(broadcastErr.message)
+    if (!broadcast) return true
 
-    const { count } = await db
+    const debitPaise = await getBroadcastDebitPaise(accountId, broadcastId)
+    if (debitPaise === null) return true
+
+    const { count, error: countErr } = await db
       .from('broadcast_recipients')
       .select('id', { count: 'exact', head: true })
       .eq('broadcast_id', broadcastId)
       .eq('status', 'failed')
       .is('whatsapp_message_id', null)
+    if (countErr) throw new Error(countErr.message)
     const unsent = count ?? 0
-    if (unsent === 0) return
+    if (unsent === 0) return true
 
     const { pricePaise } = await getTemplateCharge(
       accountId,
       broadcast.template_name,
       broadcast.template_language,
     )
-    await refundWalletAmount({
+    return await refundWalletAmount({
       accountId,
-      amountPaise: pricePaise * unsent,
+      amountPaise: Math.min(pricePaise * unsent, debitPaise),
       reference: `broadcast:${broadcastId}`,
       description: `Refund: ${unsent} unsent in broadcast "${broadcast.name}"`,
     })
   } catch (err) {
     console.error('[wallet] broadcast settle failed:', err)
+    return false
   }
 }
 
@@ -290,6 +329,9 @@ export async function refundBroadcastMessage(
       .eq('id', broadcastId)
       .maybeSingle()
     if (!broadcast) return
+    // Same guard as the settle: no campaign debit, nothing to refund.
+    const debitPaise = await getBroadcastDebitPaise(broadcast.account_id, broadcastId)
+    if (debitPaise === null) return
 
     const { pricePaise } = await getTemplateCharge(
       broadcast.account_id,
@@ -298,7 +340,7 @@ export async function refundBroadcastMessage(
     )
     await refundWalletAmount({
       accountId: broadcast.account_id,
-      amountPaise: pricePaise,
+      amountPaise: Math.min(pricePaise, debitPaise),
       reference: wamid,
       description: `Refund (delivery failed): broadcast "${broadcast.name}"`,
     })

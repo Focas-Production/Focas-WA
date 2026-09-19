@@ -62,6 +62,13 @@ browser.
   1,000 recipients.
 - Contacts sharing a phone number no longer get the same campaign
   twice.
+- Campaign refunds now require a campaign debit and never exceed it.
+  Before, refunding a campaign that was never charged credited the
+  wallet anyway.
+- `/api/whatsapp/broadcast` no longer accepts `charged_broadcast_id`.
+  That "already paid" shortcut let any old campaign id send new lists
+  free of charge. Every recipient on that route is now charged per
+  message.
 
 ## [0.9.0] — 2026-08-08
 
