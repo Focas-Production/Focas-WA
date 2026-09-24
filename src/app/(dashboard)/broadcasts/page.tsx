@@ -285,7 +285,8 @@ export default function BroadcastsPage() {
                       </span>
                     </TableCell>
                     <TableCell className="hidden text-muted-foreground sm:table-cell">
-                      {broadcast.status === 'scheduled' && broadcast.scheduled_at
+                      {/* A scheduled campaign's date is when it sends, not when it was created. */}
+                      {broadcast.scheduled_at
                         ? new Date(broadcast.scheduled_at).toLocaleString()
                         : new Date(broadcast.created_at).toLocaleDateString()}
                     </TableCell>
