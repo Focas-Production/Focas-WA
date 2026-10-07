@@ -274,6 +274,44 @@ export async function subscribeWabaToApp(
   }
 }
 
+export type SmbAppDataSyncType = 'smb_app_state_sync' | 'history'
+
+export interface RequestSmbAppDataSyncArgs {
+  phoneNumberId: string
+  accessToken: string
+  syncType: SmbAppDataSyncType
+}
+
+/**
+ * Coexistence only — ask Meta to replay the WhatsApp Business app's
+ * contacts (`smb_app_state_sync`) or chat history (`history`) to our
+ * webhook. Meta does NOT push either on its own: this must be called
+ * within 24 hours of onboarding, and only once per sync type (after
+ * that the number has to be offboarded and onboarded again).
+ * Returns Meta's request id.
+ */
+export async function requestSmbAppDataSync(
+  args: RequestSmbAppDataSyncArgs
+): Promise<string | null> {
+  const { phoneNumberId, accessToken, syncType } = args
+  const url = `${META_API_BASE}/${phoneNumberId}/smb_app_data`
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ messaging_product: 'whatsapp', sync_type: syncType }),
+  })
+  if (!response.ok) {
+    await throwMetaError(response, `Meta API error: ${response.status}`)
+  }
+  const data = (await response.json().catch(() => null)) as
+    | { request_id?: string }
+    | null
+  return data?.request_id ?? null
+}
+
 export interface GetSubscribedAppsArgs {
   wabaId: string
   accessToken: string

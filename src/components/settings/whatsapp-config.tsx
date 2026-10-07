@@ -102,6 +102,7 @@ export function WhatsAppConfig() {
   // `whatsapp_business_app_onboarding` feature selection, so we only
   // request it when the user asks for it.
   const [esCoexistence, setEsCoexistence] = useState(true);
+  const [historySyncing, setHistorySyncing] = useState(false);
   const esSessionRef = useRef<{
     phone_number_id?: string;
     waba_id?: string;
@@ -545,6 +546,9 @@ export function WhatsAppConfig() {
                     : 'WhatsApp connected via Embedded Signup'
                 );
               }
+              if (json.history_sync) {
+                reportHistorySync(json.history_sync);
+              }
               setEsPin('');
               setConnectionStatus('connected');
               if (accountId) {
@@ -578,6 +582,37 @@ export function WhatsAppConfig() {
     } catch (err) {
       setEsConnecting(false);
       toast.error(err instanceof Error ? err.message : 'Failed to start Embedded Signup');
+    }
+  }
+
+  // Coexistence history import. Meta only replays the phone app's chats
+  // and contacts when asked (within 24h of onboarding, once per type);
+  // the webhook imports whatever it then sends.
+  function reportHistorySync(result: { requested: string[]; errors: string[] }) {
+    if (result.requested.includes('history')) {
+      toast.success(
+        'Chat history requested from the WhatsApp Business app — past chats will appear in the inbox over the next few minutes.',
+        { duration: 8000 },
+      );
+    }
+    if (result.errors.length > 0) {
+      toast.warning(result.errors.join(' · '), { duration: 10000 });
+    }
+  }
+
+  async function handleHistorySync() {
+    setHistorySyncing(true);
+    try {
+      const res = await fetch('/api/whatsapp/history-sync', { method: 'POST' });
+      const json = await res.json();
+      if (!res.ok || json.error) {
+        throw new Error(json.error || 'Failed to request chat history');
+      }
+      reportHistorySync(json);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to request chat history');
+    } finally {
+      setHistorySyncing(false);
     }
   }
 
@@ -859,6 +894,31 @@ export function WhatsAppConfig() {
                 <code>META_APP_SECRET</code> on the server. The app also needs
                 Advanced Access for the two WhatsApp permissions.
               </p>
+            )}
+            {config && (
+              <div className="space-y-1.5 rounded-md border border-border p-3">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleHistorySync}
+                  disabled={historySyncing}
+                  className="border-border bg-transparent text-foreground hover:bg-muted"
+                >
+                  {historySyncing ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <RotateCcw className="size-4" />
+                  )}
+                  Import chat history from WhatsApp Business app
+                </Button>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  Coexistence numbers only. Asks Meta to send the phone
+                  app&apos;s contacts and up to 6 months of past chats into the
+                  inbox. Runs automatically after Embedded Signup; Meta
+                  accepts it only within 24 hours of connecting, and only
+                  once.
+                </p>
+              </div>
             )}
             <p className="text-xs text-muted-foreground leading-relaxed">
               Prefer manual setup? Use the credentials form below instead —

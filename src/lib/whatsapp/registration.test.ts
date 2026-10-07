@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   getSubscribedApps,
   registerPhoneNumber,
+  requestSmbAppDataSync,
   subscribeWabaToApp,
 } from './meta-api';
 
@@ -127,6 +128,49 @@ describe('subscribeWabaToApp', () => {
     await expect(
       subscribeWabaToApp({ wabaId: 'WABA_1', accessToken: 'tok' }),
     ).rejects.toThrow(/Insufficient permissions/);
+  });
+});
+
+describe('requestSmbAppDataSync', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue(
+      okResponse({ messaging_product: 'whatsapp', request_id: 'REQ_1' }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('POSTs the sync type to /{phone_number_id}/smb_app_data', async () => {
+    const requestId = await requestSmbAppDataSync({
+      phoneNumberId: 'PN_1',
+      accessToken: 'tok',
+      syncType: 'history',
+    });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toContain('/PN_1/smb_app_data');
+    expect(init.method).toBe('POST');
+    expect(init.headers.Authorization).toBe('Bearer tok');
+    expect(JSON.parse(init.body)).toEqual({
+      messaging_product: 'whatsapp',
+      sync_type: 'history',
+    });
+    expect(requestId).toBe('REQ_1');
+  });
+
+  it('throws on non-OK', async () => {
+    fetchMock.mockResolvedValueOnce(
+      errorResponse(400, { error: { message: 'Sync window expired' } }),
+    );
+    await expect(
+      requestSmbAppDataSync({
+        phoneNumberId: 'PN_1',
+        accessToken: 'tok',
+        syncType: 'smb_app_state_sync',
+      }),
+    ).rejects.toThrow(/Sync window expired/);
   });
 });
 

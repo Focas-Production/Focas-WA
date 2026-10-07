@@ -274,18 +274,19 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
       // Coexistence (WhatsApp Business app + Cloud API on one number):
       // messages the business sends FROM THE PHONE APP arrive as
       // `smb_message_echoes` — mirror them into the inbox as agent
-      // messages so the thread shows both sides. The related
-      // `history` / `smb_app_state_sync` sync events (initial chat
-      // history + contact sync from the phone) are acknowledged but
-      // not imported.
+      // messages so the thread shows both sides. `history` (past chats)
+      // and `smb_app_state_sync` (address book) only arrive after we
+      // request them via /smb_app_data (see coexistence-sync.ts).
       if (change.field === 'smb_message_echoes') {
         await handleSmbMessageEchoes(change.value as unknown as SmbEchoValue)
         continue
       }
-      if (change.field === 'history' || change.field === 'smb_app_state_sync') {
-        console.log(
-          `[webhook] coexistence '${change.field}' event received — not imported`
-        )
+      if (change.field === 'history') {
+        await handleHistorySync(change.value as unknown as HistoryValue)
+        continue
+      }
+      if (change.field === 'smb_app_state_sync') {
+        await handleSmbAppStateSync(change.value as unknown as SmbStateSyncValue)
         continue
       }
 
@@ -298,8 +299,10 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
         }
       }
 
-      // Handle incoming messages
-      if (!value.messages || !value.contacts) continue
+      // Handle incoming messages. `contacts` is checked per message
+      // below: history media follow-ups (see fillHistoryMediaPlaceholder)
+      // can arrive without it.
+      if (!value.messages) continue
 
       const phoneNumberId = value.metadata.phone_number_id
 
@@ -344,7 +347,17 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
 
       for (let i = 0; i < value.messages.length; i++) {
         const message = value.messages[i]
-        const contact = value.contacts[i] || value.contacts[0]
+
+        // Already stored — a Meta redelivery, or the media for a history
+        // placeholder (filled in place). Either way it must not be
+        // re-processed: that would duplicate the bubble and re-fire
+        // automations / AI replies.
+        if (await fillHistoryMediaPlaceholder(message, decryptedAccessToken)) {
+          continue
+        }
+
+        const contact = value.contacts?.[i] || value.contacts?.[0]
+        if (!contact) continue
 
         await processMessage(
           message,
@@ -715,19 +728,8 @@ async function handleSmbMessageEchoes(value: SmbEchoValue) {
   const echoes = value.message_echoes
   if (!phoneNumberId || !echoes?.length) return
 
-  const { data: configRows, error: configError } = await supabaseAdmin()
-    .from('whatsapp_config')
-    .select('*')
-    .eq('phone_number_id', phoneNumberId)
-
-  if (configError || !configRows || configRows.length !== 1) {
-    console.error(
-      '[webhook] smb_message_echoes: no unique config for phone_number_id:',
-      phoneNumberId
-    )
-    return
-  }
-  const config = configRows[0]
+  const config = await resolveUniqueConfig(phoneNumberId, 'smb_message_echoes')
+  if (!config) return
 
   for (const echo of echoes) {
     if (!echo.id || !echo.to) continue
@@ -804,6 +806,309 @@ async function handleSmbMessageEchoes(value: SmbEchoValue) {
         updated_at: new Date().toISOString(),
       })
       .eq('id', convResult.conversation.id)
+  }
+}
+
+/**
+ * The single whatsapp_config row for a phone number, or null (logged)
+ * when there are 0 or ≥2 — see the inbound-messages lookup in
+ * processWebhook for why ≥2 can still happen.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function resolveUniqueConfig(phoneNumberId: string, field: string): Promise<any | null> {
+  const { data: configRows, error: configError } = await supabaseAdmin()
+    .from('whatsapp_config')
+    .select('*')
+    .eq('phone_number_id', phoneNumberId)
+
+  if (configError || !configRows || configRows.length !== 1) {
+    console.error(
+      `[webhook] ${field}: no unique config for phone_number_id:`,
+      phoneNumberId
+    )
+    return null
+  }
+  return configRows[0]
+}
+
+/**
+ * Body stored for a history message whose media Meta sends later. The
+ * follow-up arrives on the `messages` field with the SAME message id
+ * and fillHistoryMediaPlaceholder swaps the real media in.
+ */
+const HISTORY_MEDIA_PLACEHOLDER = '[media]'
+
+/**
+ * Coexistence chat-history shape (`history` field). Sent in chunks after
+ * we request it via /smb_app_data; each thread is one customer, and
+ * each message is from either side — `from` tells which.
+ */
+interface HistoryMessage extends Omit<WhatsAppMessage, 'from'> {
+  from?: string
+  to?: string
+  history_context?: { status?: string }
+}
+
+interface HistoryValue {
+  metadata?: { display_phone_number?: string; phone_number_id?: string }
+  history?: Array<{
+    metadata?: { phase?: number; chunk_order?: number; progress?: number }
+    threads?: Array<{ id?: string; messages?: HistoryMessage[] }>
+    /** Present instead of threads when the business declined sharing. */
+    errors?: Array<{ code?: number; title?: string; message?: string }>
+  }>
+}
+
+// history_context.status → messages.status (CHECK: sending, sent,
+// delivered, read, failed). PLAYED is a listened-to voice note.
+const HISTORY_STATUS_MAP: Record<string, string> = {
+  PENDING: 'sending',
+  SENT: 'sent',
+  DELIVERED: 'delivered',
+  READ: 'read',
+  PLAYED: 'read',
+  ERROR: 'failed',
+}
+
+/**
+ * Import coexistence chat history into the inbox.
+ *
+ * Unlike processMessage, this is a backfill: rows keep their original
+ * timestamps, unread counts are left alone, and no automations, flows,
+ * AI replies or public webhooks fire — none of these are new messages.
+ * Deduped on the Meta message id, so re-delivered chunks and messages
+ * that already reached the inbox live are skipped.
+ */
+async function handleHistorySync(value: HistoryValue) {
+  const phoneNumberId = value.metadata?.phone_number_id
+  if (!phoneNumberId || !value.history?.length) return
+
+  const config = await resolveUniqueConfig(phoneNumberId, 'history')
+  if (!config) return
+
+  let accessToken: string
+  try {
+    accessToken = decrypt(config.access_token)
+  } catch {
+    console.error('[webhook] history: stored access token cannot be decrypted')
+    return
+  }
+
+  for (const chunk of value.history) {
+    if (chunk.errors?.length) {
+      console.warn(
+        '[webhook] history sync not shared:',
+        chunk.errors.map((e) => `${e.code}: ${e.message ?? e.title}`).join('; ')
+      )
+      continue
+    }
+    console.log(
+      `[webhook] history chunk phase=${chunk.metadata?.phase} ` +
+        `order=${chunk.metadata?.chunk_order} progress=${chunk.metadata?.progress}% ` +
+        `threads=${chunk.threads?.length ?? 0}`
+    )
+    for (const thread of chunk.threads ?? []) {
+      try {
+        await importHistoryThread(thread, config, accessToken)
+      } catch (err) {
+        // One bad thread must not abort the rest of the chunk.
+        console.error('[webhook] history thread import failed:', thread.id, err)
+      }
+    }
+  }
+}
+
+async function importHistoryThread(
+  thread: { id?: string; messages?: HistoryMessage[] },
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  config: any,
+  accessToken: string
+) {
+  const messages = (thread.messages ?? []).filter(
+    // Reactions aren't messages (see handleReaction); without the
+    // reactor's side we can't attribute them reliably, so skip.
+    (m) => m.id && m.timestamp && m.type !== 'reaction'
+  )
+  if (!thread.id || messages.length === 0) return
+
+  const customerPhone = normalizePhone(thread.id)
+  // Empty name: keeps an existing contact's name, and a new contact
+  // falls back to the phone (history carries no profile names; the
+  // address-book sync or the next inbound fills it in).
+  const contactOutcome = await findOrCreateContact(
+    config.account_id,
+    config.user_id,
+    customerPhone,
+    ''
+  )
+  if (!contactOutcome) return
+  const convResult = await findOrCreateConversation(
+    config.account_id,
+    config.user_id,
+    contactOutcome.contact.id
+  )
+  if (!convResult) return
+  const conversation = convResult.conversation
+
+  // Dedup against everything already stored, in id batches small enough
+  // for the PostgREST URL.
+  const storedIds = new Set<string>()
+  const ids = messages.map((m) => m.id)
+  for (let i = 0; i < ids.length; i += 100) {
+    const { data: existing } = await supabaseAdmin()
+      .from('messages')
+      .select('message_id')
+      .in('message_id', ids.slice(i, i + 100))
+    for (const row of existing ?? []) storedIds.add(row.message_id)
+  }
+
+  const rows = []
+  let newest: { at: number; text: string } | null = null
+  for (const message of messages) {
+    if (storedIds.has(message.id)) continue
+    storedIds.add(message.id) // same id twice within one chunk
+
+    const fromCustomer =
+      !message.from || normalizePhone(message.from) === customerPhone
+    const statusKey = message.history_context?.status?.toUpperCase() ?? ''
+
+    let contentType: string
+    let contentText: string | null
+    let mediaUrl: string | null = null
+    let interactiveReplyId: string | null = null
+    if (message.type === 'media_placeholder') {
+      contentType = 'text'
+      contentText = HISTORY_MEDIA_PLACEHOLDER
+    } else {
+      const parsed = await parseMessageContent(
+        message as WhatsAppMessage,
+        accessToken
+      )
+      contentType = toStoredContentType(message.type)
+      contentText = parsed.contentText
+      mediaUrl = parsed.mediaUrl
+      interactiveReplyId = parsed.interactiveReplyId
+    }
+
+    const at = parseInt(message.timestamp) * 1000
+    if (Number.isNaN(at)) continue
+    rows.push({
+      conversation_id: conversation.id,
+      sender_type: fromCustomer ? 'customer' : 'agent',
+      content_type: contentType,
+      content_text: contentText,
+      media_url: mediaUrl,
+      message_id: message.id,
+      status:
+        HISTORY_STATUS_MAP[statusKey] ?? (fromCustomer ? 'delivered' : 'sent'),
+      created_at: new Date(at).toISOString(),
+      interactive_reply_id: interactiveReplyId,
+    })
+    if (!newest || at > newest.at) {
+      newest = { at, text: contentText || `[${message.type}]` }
+    }
+  }
+  if (rows.length === 0) return
+
+  for (let i = 0; i < rows.length; i += 500) {
+    const { error } = await supabaseAdmin()
+      .from('messages')
+      .insert(rows.slice(i, i + 500))
+    if (error) {
+      console.error('[webhook] history insert failed:', thread.id, error)
+      return
+    }
+  }
+
+  // Only move the conversation preview forward — a backfilled chunk
+  // must not replace a newer live message as the "last message".
+  const currentLast = conversation.last_message_at
+    ? new Date(conversation.last_message_at).getTime()
+    : 0
+  if (newest && newest.at > currentLast) {
+    await supabaseAdmin()
+      .from('conversations')
+      .update({
+        last_message_text: newest.text,
+        last_message_at: new Date(newest.at).toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', conversation.id)
+  }
+}
+
+/**
+ * Called for every inbound `messages` entry before processMessage.
+ * Returns true when the message id is already stored, so the caller
+ * skips it. If the stored row is a history media placeholder, the media
+ * Meta just sent is filled in first.
+ */
+async function fillHistoryMediaPlaceholder(
+  message: WhatsAppMessage,
+  accessToken: string
+): Promise<boolean> {
+  if (!message.id) return false
+  const { data: stored } = await supabaseAdmin()
+    .from('messages')
+    .select('id, content_type, content_text')
+    .eq('message_id', message.id)
+    .limit(1)
+    .maybeSingle()
+  if (!stored) return false
+
+  if (
+    stored.content_type === 'text' &&
+    stored.content_text === HISTORY_MEDIA_PLACEHOLDER &&
+    message.type !== 'media_placeholder'
+  ) {
+    const parsed = await parseMessageContent(message, accessToken)
+    const { error } = await supabaseAdmin()
+      .from('messages')
+      .update({
+        content_type: toStoredContentType(message.type),
+        content_text: parsed.contentText,
+        media_url: parsed.mediaUrl,
+      })
+      .eq('id', stored.id)
+    if (error) {
+      console.error('[webhook] history media fill-in failed:', error)
+    }
+  }
+  return true
+}
+
+/** Coexistence address-book shape (`smb_app_state_sync` field). */
+interface SmbStateSyncValue {
+  metadata?: { phone_number_id?: string }
+  state_sync?: Array<{
+    type?: string
+    action?: string
+    contact?: { full_name?: string; first_name?: string; phone_number?: string }
+  }>
+}
+
+/**
+ * Import the WhatsApp Business app's address book as contacts (and
+ * apply later name edits). `remove` is ignored: deleting a phone
+ * contact must not delete the CRM contact and its history.
+ */
+async function handleSmbAppStateSync(value: SmbStateSyncValue) {
+  const phoneNumberId = value.metadata?.phone_number_id
+  if (!phoneNumberId || !value.state_sync?.length) return
+
+  const config = await resolveUniqueConfig(phoneNumberId, 'smb_app_state_sync')
+  if (!config) return
+
+  for (const item of value.state_sync) {
+    if (item.type !== 'contact' || item.action !== 'add') continue
+    const phone = item.contact?.phone_number
+    if (!phone) continue
+    await findOrCreateContact(
+      config.account_id,
+      config.user_id,
+      normalizePhone(phone),
+      item.contact?.full_name || item.contact?.first_name || ''
+    )
   }
 }
 
@@ -920,22 +1225,7 @@ async function processMessage(
   // parseMessageContent. Silence the unused-var warning:
   void mediaType
 
-  // The messages.content_type CHECK constraint (widened in migration 010
-  // to add 'interactive' for button/list taps) allows:
-  //   text, image, document, audio, video, location, template, interactive
-  // Map incoming WhatsApp types that aren't in that list to the closest
-  // allowed value so the INSERT doesn't fail with a constraint error.
-  const ALLOWED_CONTENT_TYPES = new Set([
-    'text', 'image', 'document', 'audio', 'video',
-    'location', 'template', 'interactive',
-  ])
-  const contentType = ALLOWED_CONTENT_TYPES.has(message.type)
-    ? message.type
-    : message.type === 'sticker'
-      ? 'image'   // stickers are images
-      : message.type === 'button'
-        ? 'interactive'   // template quick-reply tap — same affordance as a button tap
-        : 'text'    // reaction, unknown → text fallback
+  const contentType = toStoredContentType(message.type)
 
   // Determine whether this is the contact's very first inbound message
   // BEFORE we insert, so the count is accurate. Covers the case where
@@ -1194,6 +1484,26 @@ async function processMessage(
       currency: orderItems[0]?.currency ?? null,
     })
   }
+}
+
+// The messages.content_type CHECK constraint (widened in migration 010
+// to add 'interactive' for button/list taps) allows:
+//   text, image, document, audio, video, location, template, interactive
+// Map incoming WhatsApp types that aren't in that list to the closest
+// allowed value so the INSERT doesn't fail with a constraint error.
+const ALLOWED_CONTENT_TYPES = new Set([
+  'text', 'image', 'document', 'audio', 'video',
+  'location', 'template', 'interactive',
+])
+
+function toStoredContentType(type: string): string {
+  return ALLOWED_CONTENT_TYPES.has(type)
+    ? type
+    : type === 'sticker'
+      ? 'image'   // stickers are images
+      : type === 'button'
+        ? 'interactive'   // template quick-reply tap — same affordance as a button tap
+        : 'text'    // reaction, unknown → text fallback
 }
 
 async function parseMessageContent(

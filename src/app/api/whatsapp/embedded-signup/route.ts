@@ -7,6 +7,7 @@ import {
   registerPhoneNumber,
 } from '@/lib/whatsapp/meta-api'
 import { encrypt } from '@/lib/whatsapp/encryption'
+import { requestCoexistenceSync } from '@/lib/whatsapp/coexistence-sync'
 
 /**
  * POST /api/whatsapp/embedded-signup
@@ -37,7 +38,10 @@ import { encrypt } from '@/lib/whatsapp/encryption'
  *      skipped. A missing PIN or a /register failure is recorded
  *      (registered_at null / last_registration_error) so the
  *      "Not registered" banner + credentials form can finish the job,
- *   5. encrypts + stores everything in `whatsapp_config`.
+ *   5. encrypts + stores everything in `whatsapp_config`,
+ *   6. for coexistence, requests the phone app's contacts + chat
+ *      history sync (imported by the webhook's `smb_app_state_sync` /
+ *      `history` handlers).
  *
  * Env: META_APP_ID + META_APP_SECRET (both already used elsewhere for
  * webhook signatures / template media).
@@ -291,12 +295,22 @@ export async function POST(request: Request) {
       }
     }
 
+    // 6. Coexistence only: ask Meta to replay the phone app's contacts
+    // and chat history to the webhook. Meta never sends them unprompted
+    // and only accepts the request within 24h of onboarding, so it runs
+    // here, after the config row exists for the webhook to resolve.
+    // Best-effort — the connection itself already succeeded.
+    const historySync = coexistence
+      ? await requestCoexistenceSync({ phoneNumberId, accessToken })
+      : null
+
     return NextResponse.json({
       success: true,
       mode,
       phone_info: phoneInfo,
       registration_skipped: registrationSkipped,
       registration_error: registrationError,
+      history_sync: historySync,
     })
   } catch (error) {
     console.error('[embedded-signup] error:', error)

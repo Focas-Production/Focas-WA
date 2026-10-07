@@ -73,7 +73,7 @@ On the Meta app that owns your webhook:
 | **Facebook Login for Business** product added; *Login with the JavaScript SDK* on and your HTTPS origin in *Allowed Domains for the JavaScript SDK* | App Dashboard → Facebook Login for Business → Settings |
 | **WhatsApp use case** attached to the app (without it the configuration wizard only offers the *General* variation) | App Dashboard → Use cases |
 | A Configuration of type *WhatsApp Embedded Signup*, token type *Business integration system user access token*, both WhatsApp permissions, and the *Onboard numbers from the WhatsApp Business app* option enabled | App Dashboard → Facebook Login for Business → Configurations |
-| Webhook fields `messages` **and** `smb_message_echoes` subscribed | App Dashboard → WhatsApp → Configuration |
+| Webhook fields `messages`, `smb_message_echoes`, `history` **and** `smb_app_state_sync` subscribed | App Dashboard → WhatsApp → Configuration |
 
 Advanced Access is the long pole — it goes through App Review and can
 take from a few hours to ~20 days. Until it is granted, the signup
@@ -168,10 +168,35 @@ Details worth knowing:
 - **Media is summarised, not re-hosted** — an image echo becomes
   `[image] caption`. Echo media ids are short-lived, and the thread
   mainly needs to show what was said from the phone.
-- **`history` and `smb_app_state_sync`** (the initial chat-history and
-  contact sync events) are acknowledged and logged but **not
-  imported**. Importing historical threads is a possible future
-  enhancement.
+## Chat history & contacts import
+
+Meta does **not** send the phone app's past chats on its own. Right
+after a coexistence onboarding, `/api/whatsapp/embedded-signup` calls
+`POST /{phone_number_id}/smb_app_data` twice — `sync_type:
+smb_app_state_sync` (address book), then `history` — and Meta replays
+the data to the webhook:
+
+- **`smb_app_state_sync`** → contacts are created (or renamed) from
+  the address book. `remove` actions are ignored, so a contact deleted
+  on the phone keeps its CRM record.
+- **`history`** → up to ~6 months of threads, in chunks, imported with
+  their original timestamps and sender side (`from` = customer →
+  `customer`, otherwise `agent`). It's a backfill: no unread bump, no
+  automations / flows / AI replies / public webhooks, deduped on the
+  Meta message id, and the conversation preview only moves forward.
+- **Media** in history arrives as `media_placeholder` and is stored as
+  `[media]`; Meta then sends the real media on the `messages` field with
+  the same id, and the webhook fills that row in place instead of
+  treating it as a new inbound message.
+
+Meta accepts each sync request **once, within 24 hours** of
+onboarding. If the automatic request failed (or the number was
+connected before this existed), use **Settings → WhatsApp → Import chat
+history from WhatsApp Business app** (`POST /api/whatsapp/history-sync`)
+inside that window. After it, the only way to sync again is to offboard
+the number and run Embedded Signup again. If the business declined
+history sharing in the app, the webhook logs error `2593109` and
+nothing is imported.
 
 ## Security notes
 
@@ -195,6 +220,7 @@ Details worth knowing:
 | "Could not read the onboarded number from the signup flow" | The popup was closed before finishing, or the session-info event never arrived — retry |
 | `Meta token exchange failed` | `META_APP_ID` / `META_APP_SECRET` wrong or missing on the server |
 | Phone-app messages don't appear in the inbox | `smb_message_echoes` not subscribed in the app's webhook fields |
+| Old chats from the phone app don't appear | `history` not subscribed, history sharing declined in the app (log: `2593109`), or the sync wasn't requested within 24h of onboarding |
 
 ## Alternative: migrating a number instead
 
