@@ -100,6 +100,11 @@ export function renderWhatsAppText(text: string, keyPrefix = 'f'): ReactNode[] {
   return out;
 }
 
+/** One-tap OTP buttons show their autofill label on Android. */
+function buttonLabel(b: TemplateButton): string {
+  return b.type === 'OTP' && b.otp_type === 'ONE_TAP' ? b.autofill_text ?? b.text : b.text;
+}
+
 function ButtonIcon({ type }: { type: TemplateButton['type'] }) {
   const cls = 'size-3.5 shrink-0';
   switch (type) {
@@ -108,6 +113,7 @@ function ButtonIcon({ type }: { type: TemplateButton['type'] }) {
     case 'PHONE_NUMBER':
       return <Phone className={cls} />;
     case 'COPY_CODE':
+    case 'OTP':
       return <Copy className={cls} />;
     case 'QUICK_REPLY':
       return <Reply className={cls} />;
@@ -163,7 +169,7 @@ export function TemplatePreview({ data }: { data: TemplatePreviewData }) {
       : '';
   const body = applySamples(data.body_text, data.body_samples);
   const footer = data.footer_text.trim();
-  const buttons = data.buttons.filter((b) => b.text.trim());
+  const buttons = data.buttons.filter((b) => buttonLabel(b).trim());
   // WhatsApp shows up to 3 buttons inline, collapsing the rest behind
   // "See all options".
   const visibleButtons = buttons.length > 3 ? buttons.slice(0, 2) : buttons;
@@ -216,7 +222,7 @@ export function TemplatePreview({ data }: { data: TemplatePreviewData }) {
                   className="flex items-center justify-center gap-1.5 rounded-lg bg-white px-2 py-2 text-[13px] font-medium text-[#027eb5] shadow-sm dark:bg-[#202c33] dark:text-[#53bdeb]"
                 >
                   <ButtonIcon type={b.type} />
-                  <span className="truncate">{b.text}</span>
+                  <span className="truncate">{buttonLabel(b)}</span>
                 </div>
               ))}
               {buttons.length > 3 && (

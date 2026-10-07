@@ -252,7 +252,8 @@
       "finalUrl": "Final URL: {url}",
       "back": "Back",
       "cancel": "Cancel",
-      "send": "Send template"
+      "send": "Send template",
+      "otpCode": "Verification code (max 15 characters)"
     },
     "sidebar": {
       "contactInfo": "Contact info",
@@ -1373,7 +1374,6 @@
       "dialogNewTitle": "New Message Template",
       "dialogEditDesc": "Save your changes to re-submit to Meta. Status will flip back to PENDING during review.",
       "dialogNewDesc": "Build a template and submit it to Meta for approval. Once approved, you can use it in broadcasts and the inbox.",
-      "authWarning": "AUTHENTICATION templates have a fixed body + OTP button shape that needs a different builder. Create them in Meta WhatsApp Manager for now and use <bold>Sync from Meta</bold> to bring them in.",
       "templateName": "Template Name",
       "namePlaceholder": "e.g. order_confirmation",
       "nameFixed": "Name is fixed once a template exists on Meta — create a new template to change it.",
@@ -1459,7 +1459,21 @@
       "urlBasePlaceholder": "https://example.com/orders/",
       "urlDynamicHint": "The value is added to the end of the URL at send time, e.g. {url}",
       "urlVarError": "URL buttons can't contain variables like this. Choose Dynamic to add one value at the end of the URL.",
-      "footerVarError": "Footers can't contain variables (Meta rule)."
+      "footerVarError": "Footers can't contain variables (Meta rule).",
+      "authIntro": "Meta sets the wording of authentication messages: \"123456 is your verification code.\" You choose how the code is delivered and the optional security note and expiry.",
+      "authDelivery": "Code delivery",
+      "authCopyCode": "Copy code",
+      "authOneTap": "One-tap autofill (Android)",
+      "authCopyCodeHint": "The customer taps a button to copy the code, then pastes it into your app or website.",
+      "authOneTapHint": "On Android, your app fills in the code automatically. Everyone else gets a Copy code button. Requires your Android app's package name and signing-key hash.",
+      "authButtonText": "Copy code button text",
+      "authAutofillText": "Autofill button text",
+      "authPackageName": "Android package name",
+      "authSignatureHash": "App signature hash (11 chars)",
+      "authSecurity": "Add security recommendation",
+      "authSecurityHint": "Adds \"For your security, do not share this code.\"",
+      "authExpiry": "Add code expiry",
+      "authExpiryHint": "Shows \"This code expires in N minutes.\" ({min}–{max} minutes)"
     },
     "roles": {
       "admin": "Admin",

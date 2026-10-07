@@ -55,10 +55,20 @@ import {
   extractVariableKeys,
   isDynamicUrl,
   TEMPLATE_LIMITS,
+  authBodyText,
+  authFooterText,
+  getOtpButton,
   validateBody,
   validateTemplatePayload,
 } from '@/lib/whatsapp/template-validators';
 import { TemplatePreview, type TemplatePreviewData } from './template-preview';
+import {
+  TemplateAuthFields,
+  authFormToButton,
+  buttonToAuthForm,
+  emptyAuthForm,
+  type AuthFormState,
+} from './template-auth-fields';
 
 const CATEGORIES = ['Marketing', 'Utility', 'Authentication'] as const;
 type HeaderFormat = 'none' | 'text' | 'image' | 'video' | 'document';
@@ -86,6 +96,8 @@ interface TemplateFormData {
   body_samples: Record<string, string>;
   footer_text: string;
   buttons: TemplateButton[];
+  /** Used instead of the fields above when category is Authentication. */
+  auth: AuthFormState;
 }
 
 const emptyForm: TemplateFormData = {
@@ -100,6 +112,7 @@ const emptyForm: TemplateFormData = {
   body_samples: {},
   footer_text: '',
   buttons: [],
+  auth: emptyAuthForm,
 };
 
 const COMMON_LANGUAGE_CODES = [
@@ -162,6 +175,8 @@ function emptyButton(type: TemplateButton['type']): TemplateButton {
       return { type: 'PHONE_NUMBER', text: '', phone_number: '' };
     case 'COPY_CODE':
       return { type: 'COPY_CODE', text: '', example: '' };
+    case 'OTP':
+      return authFormToButton(emptyAuthForm);
   }
 }
 
@@ -225,11 +240,26 @@ export function TemplateManager() {
 
   const footerHasVar = /\{\{[^{}]*\}\}/.test(form.footer_text);
 
-  const missingSampleCount =
-    bodyKeys.filter((k) => !form.body_samples[k]?.trim()).length +
-    (headerKey && !form.header_sample.trim() ? 1 : 0);
+  const isAuth = form.category === 'Authentication';
 
-  const previewData: TemplatePreviewData = {
+  const missingSampleCount = isAuth
+    ? 0
+    : bodyKeys.filter((k) => !form.body_samples[k]?.trim()).length +
+      (headerKey && !form.header_sample.trim() ? 1 : 0);
+
+  const authButton = authFormToButton(form.auth);
+  const previewData: TemplatePreviewData = isAuth
+    ? {
+        header_format: 'none',
+        header_content: '',
+        header_media_url: '',
+        header_sample: '',
+        body_text: authBodyText(form.auth.security),
+        body_samples: { '1': '123456' },
+        footer_text: authFooterText(authButton.code_expiration_minutes || undefined) ?? '',
+        buttons: [authButton],
+      }
+    : {
     header_format: form.header_format,
     header_content: form.header_content,
     header_media_url: form.header_media_url,
@@ -269,6 +299,17 @@ export function TemplateManager() {
   }
 
   function buildSubmitPayload() {
+    if (form.category === 'Authentication') {
+      const otp = authFormToButton(form.auth);
+      return {
+        name: form.name.trim(),
+        category: form.category,
+        language: form.language.trim() || 'en_US',
+        body_text: authBodyText(form.auth.security),
+        footer_text: authFooterText(otp.code_expiration_minutes || undefined),
+        buttons: [otp],
+      };
+    }
     const sample_values: TemplateSampleValues = {};
     const bodySamples = bodyKeys.map((k) => (form.body_samples[k] ?? '').trim());
     if (bodySamples.some(Boolean)) {
@@ -311,6 +352,7 @@ export function TemplateManager() {
       body_samples: templateToPreviewData(template).body_samples,
       footer_text: template.footer_text ?? '',
       buttons: template.buttons ?? [],
+      auth: buttonToAuthForm(getOtpButton(template.buttons)),
     });
     setDialogOpen(true);
   }
@@ -322,9 +364,6 @@ export function TemplateManager() {
   }
 
   async function handleSubmit() {
-    // AUTHENTICATION is blocked by the persistent banner + disabled
-    // submit button; this is a defensive second line of defense.
-    if (form.category === 'Authentication') return;
     // Same validators the API runs — catch mistakes before the round
     // trip. Image headers may still lack a handle here; the server
     // derives it from header_media_url, so only that's required.
@@ -768,13 +807,6 @@ export function TemplateManager() {
             </DialogDescription>
           </DialogHeader>
 
-          {form.category === 'Authentication' && (
-            <div className="flex items-start gap-2 rounded border border-amber-700/40 bg-amber-950/30 px-3 py-2 text-xs text-amber-300">
-              <AlertCircle className="size-4 mt-0.5 shrink-0" />
-              <p>{t.rich('authWarning', { bold: (chunks) => <strong>{chunks}</strong> })}</p>
-            </div>
-          )}
-
           <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
           <div className="min-w-0 space-y-4 py-2">
             <div className="space-y-2">
@@ -849,6 +881,15 @@ export function TemplateManager() {
               </div>
             </div>
 
+            {isAuth ? (
+              <TemplateAuthFields
+                value={form.auth}
+                onChange={(patch) =>
+                  setForm((prev) => ({ ...prev, auth: { ...prev.auth, ...patch } }))
+                }
+              />
+            ) : (
+            <>
             <div className="space-y-2">
               <Label className="text-muted-foreground">{t('header')}</Label>
               <Select
@@ -1276,6 +1317,8 @@ export function TemplateManager() {
                 </div>
               )}
             </div>
+            </>
+            )}
           </div>
 
           <aside className="space-y-2 py-2 lg:sticky lg:top-0 lg:self-start">
@@ -1305,7 +1348,7 @@ export function TemplateManager() {
             </Button>
             <Button
               onClick={handleSubmit}
-              disabled={submitting || form.category === 'Authentication'}
+              disabled={submitting}
               className="bg-primary hover:bg-primary/90 text-primary-foreground"
             >
               {submitting ? (

@@ -13,6 +13,7 @@
 import {
   detectParameterFormat,
   extractVariableKeys,
+  getOtpButton,
   type ParameterFormat,
   type TemplatePayload,
 } from './template-validators';
@@ -23,6 +24,10 @@ export interface MetaComponent {
   format?: 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT';
   text?: string;
   buttons?: MetaButtonPayload[];
+  /** AUTHENTICATION BODY only. */
+  add_security_recommendation?: boolean;
+  /** AUTHENTICATION FOOTER only. */
+  code_expiration_minutes?: number;
   example?: {
     header_text?: string[];
     header_url?: string[];
@@ -51,11 +56,14 @@ function templateParameterFormat(payload: TemplatePayload): ParameterFormat {
 }
 
 interface MetaButtonPayload {
-  type: 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER' | 'COPY_CODE';
+  type: 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER' | 'COPY_CODE' | 'OTP';
   text: string;
   url?: string;
   phone_number?: string;
   example?: string[];
+  otp_type?: 'COPY_CODE' | 'ONE_TAP';
+  autofill_text?: string;
+  supported_apps?: { package_name: string; signature_hash: string }[];
 }
 
 function buildHeaderComponent(payload: TemplatePayload): MetaComponent | null {
@@ -144,6 +152,21 @@ function buildButtonPayload(b: TemplateButton): MetaButtonPayload {
       return { type: 'PHONE_NUMBER', text: b.text, phone_number: b.phone_number };
     case 'COPY_CODE':
       return { type: 'COPY_CODE', text: b.text, example: [b.example] };
+    case 'OTP': {
+      const payload: MetaButtonPayload = {
+        type: 'OTP',
+        otp_type: b.otp_type,
+        text: b.text,
+      };
+      if (b.otp_type === 'ONE_TAP') {
+        payload.autofill_text = b.autofill_text;
+        payload.supported_apps = (b.supported_apps ?? []).map((a) => ({
+          package_name: a.package_name.trim(),
+          signature_hash: a.signature_hash.trim(),
+        }));
+      }
+      return payload;
+    }
   }
 }
 
@@ -177,9 +200,35 @@ const CATEGORY_TO_META: Record<
  * Assemble the full submit payload (name + category + language +
  * components in canonical order: HEADER → BODY → FOOTER → BUTTONS).
  */
+/**
+ * AUTHENTICATION templates use Meta's fixed wording: the BODY carries
+ * no text (only the security-note flag), the FOOTER only the expiry,
+ * and BUTTONS exactly one OTP button.
+ */
+function buildAuthComponents(payload: TemplatePayload): MetaComponent[] {
+  const otp = getOtpButton(payload.buttons);
+  if (!otp) throw new Error('Authentication templates need an OTP button.');
+  const components: MetaComponent[] = [
+    { type: 'BODY', add_security_recommendation: !!otp.add_security_recommendation },
+  ];
+  if (otp.code_expiration_minutes) {
+    components.push({ type: 'FOOTER', code_expiration_minutes: otp.code_expiration_minutes });
+  }
+  components.push({ type: 'BUTTONS', buttons: [buildButtonPayload(otp)] });
+  return components;
+}
+
 export function buildMetaTemplatePayload(
   payload: TemplatePayload,
 ): MetaTemplateSubmitPayload {
+  if (payload.category === 'Authentication') {
+    return {
+      name: payload.name,
+      category: 'AUTHENTICATION',
+      language: payload.language,
+      components: buildAuthComponents(payload),
+    };
+  }
   const components: MetaComponent[] = [];
   const header = buildHeaderComponent(payload);
   if (header) components.push(header);

@@ -22,6 +22,7 @@ import {
   Loader2,
 } from "lucide-react";
 import {
+  AUTH_LIMITS,
   extractVariableIndices,
   extractVariableKeys,
 } from "@/lib/whatsapp/template-validators";
@@ -280,9 +281,12 @@ export function TemplatePicker({
             )}
             {slots?.bodyVars.map((v, i) => (
               <div key={v} className="space-y-1">
-                <Label className="text-xs text-popover-foreground">{`Body {{${v}}}`}</Label>
+                <Label className="text-xs text-popover-foreground">
+                  {selected.category === "Authentication" ? t("otpCode") : `Body {{${v}}}`}
+                </Label>
                 <Input
                   value={params[i] ?? ""}
+                  maxLength={selected.category === "Authentication" ? AUTH_LIMITS.maxCodeLength : undefined}
                   onChange={(e) => {
                     const next = [...params];
                     next[i] = e.target.value;

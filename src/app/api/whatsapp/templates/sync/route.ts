@@ -2,8 +2,12 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { decrypt } from '@/lib/whatsapp/encryption'
 import { normalizeStatus } from '@/lib/whatsapp/template-status-normalize'
-import type { TemplateButton, TemplateSampleValues } from '@/types'
-import { extractVariableKeys } from '@/lib/whatsapp/template-validators'
+import type { OtpTemplateButton, TemplateButton, TemplateSampleValues } from '@/types'
+import {
+  authBodyText,
+  authFooterText,
+  extractVariableKeys,
+} from '@/lib/whatsapp/template-validators'
 
 /**
  * Sync message templates from Meta → local message_templates table.
@@ -27,6 +31,11 @@ interface MetaButton {
   url?: string
   phone_number?: string
   example?: string[] | string
+  otp_type?: string
+  autofill_text?: string
+  supported_apps?: { package_name: string; signature_hash: string }[]
+  package_name?: string
+  signature_hash?: string
 }
 
 interface MetaTemplateComponent {
@@ -34,6 +43,8 @@ interface MetaTemplateComponent {
   text?: string
   format?: string
   buttons?: MetaButton[]
+  add_security_recommendation?: boolean
+  code_expiration_minutes?: number
   example?: {
     header_text?: string[]
     header_handle?: string[]
@@ -74,6 +85,24 @@ function normalizeQualityScore(
     : null
 }
 
+function parseOtpButton(b: MetaButton): OtpTemplateButton {
+  const fromUrl = b.url?.match(/otp_type=([A-Z_]+)/i)?.[1]
+  const otpType = (b.otp_type ?? fromUrl ?? 'COPY_CODE').toUpperCase()
+  const apps =
+    b.supported_apps ??
+    (b.package_name && b.signature_hash
+      ? [{ package_name: b.package_name, signature_hash: b.signature_hash }]
+      : undefined)
+  // ZERO_TAP isn't buildable here; it still sends like ONE_TAP.
+  const isTap = otpType === 'ONE_TAP' || otpType === 'ZERO_TAP'
+  return {
+    type: 'OTP',
+    otp_type: isTap ? 'ONE_TAP' : 'COPY_CODE',
+    text: b.text || 'Copy code',
+    ...(isTap && { autofill_text: b.autofill_text || 'Autofill', supported_apps: apps }),
+  }
+}
+
 function parseButtons(metaButtons: MetaButton[] | undefined): TemplateButton[] {
   if (!metaButtons?.length) return []
   const out: TemplateButton[] = []
@@ -82,7 +111,16 @@ function parseButtons(metaButtons: MetaButton[] | undefined): TemplateButton[] {
       case 'QUICK_REPLY':
         out.push({ type: 'QUICK_REPLY', text: b.text })
         break
+      case 'OTP':
+        out.push(parseOtpButton(b))
+        break
       case 'URL':
+        // Some API versions report an OTP button as a URL to Meta's
+        // OTP endpoint — keep it as OTP so sends attach the code.
+        if (/whatsapp\.com\/otp\//i.test(b.url ?? '')) {
+          out.push(parseOtpButton(b))
+          break
+        }
         out.push({
           type: 'URL',
           text: b.text,
@@ -104,7 +142,7 @@ function parseButtons(metaButtons: MetaButton[] | undefined): TemplateButton[] {
           example: Array.isArray(b.example) ? b.example[0] ?? '' : b.example ?? '',
         })
         break
-      // OTP, FLOW, etc — out of scope for v1; drop silently.
+      // FLOW, CATALOG, etc — out of scope; drop silently.
     }
   }
   return out
@@ -239,8 +277,16 @@ export async function POST() {
       const buttons = (t.components ?? []).find((c) => c.type === 'BUTTONS')
 
       const parsedButtons = parseButtons(buttons?.buttons)
+      // Authentication options live on BODY/FOOTER at Meta; we keep
+      // them on the OTP button (see OtpTemplateButton).
+      for (const b of parsedButtons) {
+        if (b.type !== 'OTP') continue
+        if (body?.add_security_recommendation) b.add_security_recommendation = true
+        if (footer?.code_expiration_minutes) b.code_expiration_minutes = footer.code_expiration_minutes
+      }
       const sampleValues = extractSampleValues(body, header)
 
+      const isAuth = normalizeCategory(t.category) === 'Authentication'
       const headerFormat = header?.format?.toUpperCase()
       const headerType =
         headerFormat === 'TEXT' ||
@@ -262,8 +308,14 @@ export async function POST() {
         header_type: headerType,
         header_content: header?.text ?? null,
         header_handle: header?.example?.header_handle?.[0] ?? null,
-        body_text: body?.text ?? '',
-        footer_text: footer?.text ?? null,
+        // Fall back to Meta's fixed English wording if an
+        // authentication template comes back without text.
+        body_text:
+          body?.text ||
+          (isAuth ? authBodyText(!!body?.add_security_recommendation) : ''),
+        footer_text:
+          footer?.text ??
+          (isAuth ? authFooterText(footer?.code_expiration_minutes) ?? null : null),
         buttons: parsedButtons.length ? parsedButtons : null,
         sample_values: sampleValues,
         status: normalizeStatus(t.status),

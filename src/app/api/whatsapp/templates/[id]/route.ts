@@ -6,6 +6,7 @@ import {
   editMessageTemplate,
 } from '@/lib/whatsapp/meta-api'
 import {
+  normalizeAuthPayload,
   validateTemplatePayload,
   type TemplatePayload,
 } from '@/lib/whatsapp/template-validators'
@@ -118,16 +119,6 @@ export async function PATCH(
       )
     }
 
-    if (payload.category === 'Authentication') {
-      return NextResponse.json(
-        {
-          error:
-            'AUTHENTICATION templates are not editable here — manage them in Meta WhatsApp Manager.',
-        },
-        { status: 400 },
-      )
-    }
-
     try {
       validateTemplatePayload(payload)
     } catch (e) {
@@ -136,6 +127,7 @@ export async function PATCH(
         { status: 400 },
       )
     }
+    payload = normalizeAuthPayload(payload)
 
     if (!isDryRun()) {
       const { data: config, error: configError } = await supabase

@@ -305,7 +305,31 @@ export type TemplateButton =
   | { type: 'QUICK_REPLY'; text: string }
   | { type: 'URL'; text: string; url: string; example?: string }
   | { type: 'PHONE_NUMBER'; text: string; phone_number: string }
-  | { type: 'COPY_CODE'; text: string; example: string };
+  | { type: 'COPY_CODE'; text: string; example: string }
+  | OtpTemplateButton;
+
+export type OtpType = 'COPY_CODE' | 'ONE_TAP';
+
+/**
+ * The one button every AUTHENTICATION template carries. Meta fixes the
+ * body/footer wording, so the template's only configurable options
+ * (security note, code expiry) ride along here too — that keeps them
+ * in the existing `buttons` JSONB column without a schema change.
+ */
+export interface OtpTemplateButton {
+  type: 'OTP';
+  otp_type: OtpType;
+  /** Copy-code button label (Meta default: "Copy code"). */
+  text: string;
+  /** ONE_TAP only: autofill button label (Meta default: "Autofill"). */
+  autofill_text?: string;
+  /** ONE_TAP only: Android apps allowed to receive the code. */
+  supported_apps?: { package_name: string; signature_hash: string }[];
+  /** Adds "For your security, do not share this code." to the body. */
+  add_security_recommendation?: boolean;
+  /** Adds "This code expires in N minutes." as the footer (1–90). */
+  code_expiration_minutes?: number;
+}
 
 export interface TemplateSampleValues {
   body?: string[];

@@ -32,6 +32,7 @@
 
 import type { MessageTemplate, TemplateButton } from '@/types';
 import {
+  AUTH_LIMITS,
   detectParameterFormat,
   extractVariableIndices,
   extractVariableKeys,
@@ -181,6 +182,9 @@ function buttonNeedsSendParam(
       // gets a real code (either the caller's override or the
       // template's example as a default).
       return true;
+    case 'OTP':
+      // Authentication templates must repeat the code on the button.
+      return true;
     case 'QUICK_REPLY':
     case 'PHONE_NUMBER':
       return override !== undefined;
@@ -233,6 +237,25 @@ function buildButtonComponent(
       // PHONE_NUMBER buttons never accept send-time params per Meta —
       // return null even if an override snuck through.
       return null;
+    case 'OTP': {
+      // Meta sends the OTP button (copy-code and one-tap alike) as a
+      // url-subtype button whose single parameter is the code.
+      const code = override?.trim();
+      if (!code) {
+        throw new Error('Authentication template requires the one-time code.');
+      }
+      if (code.length > AUTH_LIMITS.maxCodeLength) {
+        throw new Error(
+          `One-time code must be at most ${AUTH_LIMITS.maxCodeLength} characters.`,
+        );
+      }
+      return {
+        type: 'button',
+        sub_type: 'url',
+        index: String(index),
+        parameters: [{ type: 'text', text: code }],
+      };
+    }
   }
 }
 
@@ -252,7 +275,9 @@ export function buildSendComponents(
   if (body) out.push(body);
   if (template.buttons?.length) {
     template.buttons.forEach((btn, i) => {
-      const override = params.buttonParams?.[i];
+      // OTP buttons default to the body's code so callers only pass it once.
+      const override =
+        params.buttonParams?.[i] ?? (btn.type === 'OTP' ? params.body?.[0] : undefined);
       const component = buildButtonComponent(btn, i, override);
       if (component) out.push(component);
     });

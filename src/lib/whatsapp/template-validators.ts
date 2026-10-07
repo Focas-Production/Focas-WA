@@ -294,6 +294,7 @@ function countButtonsByType(
     URL: 0,
     PHONE_NUMBER: 0,
     COPY_CODE: 0,
+    OTP: 0,
   };
   for (const b of buttons) counts[b.type]++;
   return counts;
@@ -308,6 +309,9 @@ export function validateButtons(buttons: TemplateButton[] | undefined): void {
   }
 
   const counts = countButtonsByType(buttons);
+  if (counts.OTP > 0) {
+    throw new Error('OTP buttons can only be used in Authentication templates.');
+  }
   if (counts.URL > TEMPLATE_LIMITS.maxUrlButtons) {
     throw new Error(
       `At most ${TEMPLATE_LIMITS.maxUrlButtons} URL buttons allowed (got ${counts.URL}).`,
@@ -438,6 +442,127 @@ export function validateSampleValues(
   }
 }
 
+export const AUTH_LIMITS = {
+  minExpiryMinutes: 1,
+  maxExpiryMinutes: 90,
+  /** Meta caps a delivered one-time code at 15 characters. */
+  maxCodeLength: 15,
+  /** Android package name, e.g. com.example.app */
+  packageNameRegex: /^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z][a-zA-Z0-9_]*)+$/,
+  /** App signing-key hash: exactly 11 chars (base64 alphabet). */
+  signatureHashRegex: /^[A-Za-z0-9+/]{11}$/,
+} as const;
+
+/**
+ * AUTHENTICATION templates have Meta-fixed wording: no custom header,
+ * body text, or extra buttons — only one OTP button plus the optional
+ * security note and expiry, which we carry on that button.
+ */
+export function validateAuthTemplate(payload: TemplatePayload): void {
+  if (payload.header_type) {
+    throw new Error('Authentication templates cannot have a header.');
+  }
+  const buttons = payload.buttons ?? [];
+  const otp = buttons[0];
+  if (buttons.length !== 1 || !otp || otp.type !== 'OTP') {
+    throw new Error('Authentication templates need exactly one OTP button.');
+  }
+  if (otp.otp_type !== 'COPY_CODE' && otp.otp_type !== 'ONE_TAP') {
+    throw new Error('OTP button must be Copy code or One-tap autofill.');
+  }
+  if (!otp.text?.trim()) {
+    throw new Error('OTP button text is required.');
+  }
+  if (otp.text.length > TEMPLATE_LIMITS.buttonTextMaxLength) {
+    throw new Error(
+      `OTP button text exceeds ${TEMPLATE_LIMITS.buttonTextMaxLength} chars.`,
+    );
+  }
+  if (otp.otp_type === 'ONE_TAP') {
+    if (!otp.autofill_text?.trim()) {
+      throw new Error('One-tap autofill button text is required.');
+    }
+    if (otp.autofill_text.length > TEMPLATE_LIMITS.buttonTextMaxLength) {
+      throw new Error(
+        `Autofill button text exceeds ${TEMPLATE_LIMITS.buttonTextMaxLength} chars.`,
+      );
+    }
+    const apps = otp.supported_apps ?? [];
+    if (apps.length === 0) {
+      throw new Error('One-tap autofill needs your Android app package name and signature hash.');
+    }
+    if (apps.length > 5) {
+      throw new Error('One-tap autofill supports at most 5 apps.');
+    }
+    apps.forEach((app, i) => {
+      if (!AUTH_LIMITS.packageNameRegex.test(app.package_name?.trim() ?? '')) {
+        throw new Error(
+          `App #${i + 1}: package name must look like com.example.app.`,
+        );
+      }
+      if (!AUTH_LIMITS.signatureHashRegex.test(app.signature_hash?.trim() ?? '')) {
+        throw new Error(
+          `App #${i + 1}: signature hash must be exactly 11 characters.`,
+        );
+      }
+    });
+  }
+  const mins = otp.code_expiration_minutes;
+  if (
+    mins !== undefined &&
+    (!Number.isInteger(mins) ||
+      mins < AUTH_LIMITS.minExpiryMinutes ||
+      mins > AUTH_LIMITS.maxExpiryMinutes)
+  ) {
+    throw new Error(
+      `Code expiry must be a whole number of minutes between ${AUTH_LIMITS.minExpiryMinutes} and ${AUTH_LIMITS.maxExpiryMinutes}.`,
+    );
+  }
+}
+
+/** The OTP button of an authentication template, if any. */
+export function getOtpButton(
+  buttons: TemplateButton[] | null | undefined,
+): Extract<TemplateButton, { type: 'OTP' }> | null {
+  const b = buttons?.find((x) => x.type === 'OTP');
+  return b && b.type === 'OTP' ? b : null;
+}
+
+/**
+ * Local copy of Meta's fixed English wording, so previews and the
+ * inbox show something sensible before a sync pulls Meta's localized
+ * text.
+ */
+export function authBodyText(addSecurityRecommendation: boolean): string {
+  return addSecurityRecommendation
+    ? '*{{1}}* is your verification code. For your security, do not share this code.'
+    : '*{{1}}* is your verification code.';
+}
+
+export function authFooterText(minutes: number | undefined): string | undefined {
+  return minutes ? `This code expires in ${minutes} minutes.` : undefined;
+}
+
+/**
+ * Server-side: overwrite an authentication payload's text fields with
+ * Meta's fixed wording, so the stored row never drifts from what Meta
+ * actually sends no matter what the client posted.
+ */
+export function normalizeAuthPayload(payload: TemplatePayload): TemplatePayload {
+  if (payload.category !== 'Authentication') return payload;
+  const otp = getOtpButton(payload.buttons);
+  return {
+    ...payload,
+    header_type: undefined,
+    header_content: undefined,
+    header_media_url: undefined,
+    header_handle: undefined,
+    body_text: authBodyText(!!otp?.add_security_recommendation),
+    footer_text: authFooterText(otp?.code_expiration_minutes),
+    sample_values: undefined,
+  };
+}
+
 /**
  * Run every validator. Throws on the first failure with a specific,
  * field-level message. Returns the variable counts so callers can
@@ -450,6 +575,11 @@ export function validateTemplatePayload(payload: TemplatePayload): {
   validateTemplateName(payload.name);
   if (!payload.language?.trim()) {
     throw new Error('Language is required.');
+  }
+  if (payload.category === 'Authentication') {
+    validateAuthTemplate(payload);
+    // Meta's fixed body always has exactly one variable: the code.
+    return { bodyVarCount: 1, headerVarCount: 0 };
   }
   const bodyVars = validateBody(payload.body_text);
   validateFooter(payload.footer_text);
