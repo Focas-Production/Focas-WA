@@ -711,6 +711,7 @@ interface SmbEchoValue {
     image?: { caption?: string }
     video?: { caption?: string }
     document?: { caption?: string; filename?: string }
+    reaction?: { message_id?: string; emoji?: string }
   }>
 }
 
@@ -759,6 +760,18 @@ async function handleSmbMessageEchoes(value: SmbEchoValue) {
     )
     if (!convResult) continue
 
+    // Reactions aren't messages (see handleReaction) — attach to the
+    // target message as the account owner's agent reaction instead of
+    // inserting a "[reaction]" bubble.
+    if (echo.type === 'reaction') {
+      await handleEchoReaction(
+        echo.reaction,
+        convResult.conversation.id,
+        config.user_id
+      )
+      continue
+    }
+
     let contentText: string
     switch (echo.type) {
       case 'text':
@@ -806,6 +819,60 @@ async function handleSmbMessageEchoes(value: SmbEchoValue) {
         updated_at: new Date().toISOString(),
       })
       .eq('id', convResult.conversation.id)
+  }
+}
+
+/**
+ * A reaction the business made from the phone app. Stored as an agent
+ * reaction attributed to the account owner (the phone has no per-agent
+ * identity); an empty emoji removes it.
+ */
+async function handleEchoReaction(
+  reaction: { message_id?: string; emoji?: string } | undefined,
+  conversationId: string,
+  ownerUserId: string
+) {
+  if (!reaction?.message_id) return
+
+  const targetInternalId = await lookupInternalIdByMetaId(
+    reaction.message_id,
+    conversationId
+  )
+  if (!targetInternalId) {
+    console.warn(
+      '[webhook] echo reaction target message not found; skipping',
+      reaction.message_id
+    )
+    return
+  }
+
+  if (!reaction.emoji) {
+    const { error: delError } = await supabaseAdmin()
+      .from('message_reactions')
+      .delete()
+      .eq('message_id', targetInternalId)
+      .eq('actor_type', 'agent')
+      .eq('actor_id', ownerUserId)
+    if (delError) {
+      console.error('[webhook] echo reaction delete failed:', delError.message)
+    }
+    return
+  }
+
+  const { error: upsertError } = await supabaseAdmin()
+    .from('message_reactions')
+    .upsert(
+      {
+        message_id: targetInternalId,
+        conversation_id: conversationId,
+        actor_type: 'agent',
+        actor_id: ownerUserId,
+        emoji: reaction.emoji,
+      },
+      { onConflict: 'message_id,actor_type,actor_id' }
+    )
+  if (upsertError) {
+    console.error('[webhook] echo reaction upsert failed:', upsertError.message)
   }
 }
 

@@ -14,12 +14,14 @@ import {
   ImageOff,
   CornerDownLeft,
   Sparkles,
+  Download,
 } from "lucide-react";
 import { format } from "date-fns";
 import { ReplyQuote } from "./reply-quote";
 import { MessageReactions } from "./message-reactions";
 import { InteractivePreview } from "@/components/interactive/interactive-preview";
 import { useTranslations } from "next-intl";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 
 interface MessageBubbleProps {
   message: Message;
@@ -60,6 +62,7 @@ function MediaImage({ url, alt }: { url: string; alt: string }) {
   const [src, setSrc] = useState<string | null>(null);
   const [error, setError] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [open, setOpen] = useState(false);
 
   const loadImage = useCallback(async () => {
     if (!url) return;
@@ -110,12 +113,39 @@ function MediaImage({ url, alt }: { url: string; alt: string }) {
   }
 
   return (
-    <img
-      src={src ?? ""}
-      alt={alt}
-      className="max-h-64 max-w-60 rounded-lg object-cover"
-      onError={() => setError(true)}
-    />
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="block cursor-zoom-in"
+        aria-label="View image"
+      >
+        <img
+          src={src ?? ""}
+          alt={alt}
+          className="max-h-64 max-w-60 rounded-lg object-cover"
+          onError={() => setError(true)}
+        />
+      </button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="flex max-h-[95vh] w-auto max-w-[95vw] flex-col items-center bg-black/90 p-2 sm:max-w-[95vw]">
+          <DialogTitle className="sr-only">{alt}</DialogTitle>
+          <img
+            src={src ?? ""}
+            alt={alt}
+            className="max-h-[85vh] max-w-[90vw] rounded object-contain"
+          />
+          <a
+            href={src ?? ""}
+            download="image"
+            className="inline-flex items-center gap-1 text-xs text-white/80 hover:text-white"
+          >
+            <Download className="h-3.5 w-3.5" />
+            Download
+          </a>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
