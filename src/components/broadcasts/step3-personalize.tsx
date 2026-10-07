@@ -14,6 +14,14 @@ import {
 } from '@/components/ui/select';
 import { ArrowLeft, ArrowRight, Eye, ImageIcon, Loader2 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
+import {
+  extractVariableKeys,
+  isDynamicUrl,
+} from '@/lib/whatsapp/template-validators';
+import {
+  buttonVariableKey,
+  HEADER_VARIABLE_KEY,
+} from '@/lib/whatsapp/variable-resolution';
 
 type VariableType = 'static' | 'field' | 'custom_field';
 
@@ -128,11 +136,40 @@ export function Step3Personalize({
     };
   }, []);
 
-  const placeholders = useMemo(() => {
-    const matches = template.body_text.match(/\{\{(\d+)\}\}/g);
-    if (!matches) return [];
-    return [...new Set(matches)].sort();
-  }, [template.body_text]);
+  // Canonical key order ({{1}} before {{10}}; named keys alphabetical)
+  // — must match resolveVariables so values line up at send time.
+  const placeholders = useMemo(
+    () => extractVariableKeys(template.body_text).map((k) => `{{${k}}}`),
+    [template.body_text],
+  );
+
+  // Every value the send needs: body variables, plus a text-header
+  // variable and dynamic URL-button suffixes (stored under reserved
+  // keys — see HEADER_VARIABLE_KEY / buttonVariableKey).
+  const slots = useMemo(() => {
+    const out: { key: string; label: string }[] = placeholders.map((p) => ({
+      key: p.replace(/^\{\{|\}\}$/g, ''),
+      label: p,
+    }));
+    if (template.header_type === 'text') {
+      const headerKey = extractVariableKeys(template.header_content ?? '')[0];
+      if (headerKey) {
+        out.unshift({
+          key: HEADER_VARIABLE_KEY,
+          label: t('personalize.headerVariable', { var: `{{${headerKey}}}` }),
+        });
+      }
+    }
+    (template.buttons ?? []).forEach((b, i) => {
+      if (b.type === 'URL' && isDynamicUrl(b.url)) {
+        out.push({
+          key: buttonVariableKey(i),
+          label: t('personalize.urlButtonVariable', { text: b.text }),
+        });
+      }
+    });
+    return out;
+  }, [placeholders, template.header_type, template.header_content, template.buttons, t]);
 
   // Templates with an IMAGE/VIDEO/DOCUMENT header need a media URL at
   // send time — Meta requires the media component on every delivery and
@@ -169,15 +206,14 @@ export function Step3Personalize({
    */
   const unmappedKeys = useMemo(() => {
     const missing: string[] = [];
-    for (const placeholder of placeholders) {
-      const key = placeholder.replace(/^\{\{|\}\}$/g, '');
-      const mapping = variables[key];
+    for (const slot of slots) {
+      const mapping = variables[slot.key];
       if (!mapping || !mapping.value?.trim()) {
-        missing.push(placeholder);
+        missing.push(slot.label);
       }
     }
     return missing;
-  }, [placeholders, variables]);
+  }, [slots, variables]);
 
   function updateVariable(key: string, patch: Partial<VariableMapping>) {
     const current = variables[key] ?? { type: 'static' as VariableType, value: '' };
@@ -218,7 +254,10 @@ export function Step3Personalize({
           replacement = customValues.get(mapping.value) || placeholder;
         }
       }
-      text = text.replaceAll(placeholder, replacement);
+      text = text.replace(
+        new RegExp(`\\{\\{\\s*${key}\\s*\\}\\}`, 'g'),
+        () => replacement,
+      );
     }
     return text;
   }, [
@@ -284,26 +323,25 @@ export function Step3Personalize({
         </div>
       )}
 
-      {placeholders.length === 0 && !mediaHeaderType ? (
+      {slots.length === 0 && !mediaHeaderType ? (
         <div className="rounded-xl border border-border bg-card/50 p-6 text-center">
           <p className="text-sm text-muted-foreground">
             {t('personalize.noPreview')}
           </p>
         </div>
-      ) : placeholders.length === 0 ? null : (
+      ) : slots.length === 0 ? null : (
         <div className="space-y-4">
-          {placeholders.map((placeholder) => {
-            const key = placeholder.replace(/^\{\{|\}\}$/g, '');
+          {slots.map(({ key, label }) => {
             const mapping = variables[key] ?? { type: 'static', value: '' };
 
             return (
               <div
-                key={placeholder}
+                key={key}
                 className="rounded-xl border border-border bg-card/50 p-4"
               >
                 <div className="mb-3 flex items-center gap-2">
                   <span className="inline-flex items-center rounded-md bg-primary/10 px-2 py-0.5 text-xs font-mono font-medium text-primary">
-                    {placeholder}
+                    {label}
                   </span>
                 </div>
 

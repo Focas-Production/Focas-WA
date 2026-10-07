@@ -732,6 +732,8 @@ export interface EditMessageTemplateArgs {
   components: MetaTemplateSubmitPayload['components']
   /** Optional — only certain category transitions are allowed by Meta. */
   category?: MetaTemplateSubmitPayload['category']
+  /** Required when the edited components use named `{{var}}` params. */
+  parameterFormat?: MetaTemplateSubmitPayload['parameter_format']
 }
 
 export interface EditMessageTemplateResult {
@@ -751,9 +753,10 @@ export interface EditMessageTemplateResult {
 export async function editMessageTemplate(
   args: EditMessageTemplateArgs
 ): Promise<EditMessageTemplateResult> {
-  const { metaTemplateId, accessToken, components, category } = args
+  const { metaTemplateId, accessToken, components, category, parameterFormat } = args
   const body: Record<string, unknown> = { components }
   if (category) body.category = category
+  if (parameterFormat) body.parameter_format = parameterFormat
   const response = await fetch(`${META_API_BASE}/${metaTemplateId}`, {
     method: 'POST',
     headers: {

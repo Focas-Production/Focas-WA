@@ -10,7 +10,12 @@
  *   https://developers.facebook.com/docs/whatsapp/business-management-api/message-templates/components
  */
 
-import type { TemplatePayload } from './template-validators';
+import {
+  detectParameterFormat,
+  extractVariableKeys,
+  type ParameterFormat,
+  type TemplatePayload,
+} from './template-validators';
 import type { TemplateButton } from '@/types';
 
 export interface MetaComponent {
@@ -23,7 +28,26 @@ export interface MetaComponent {
     header_url?: string[];
     header_handle?: string[];
     body_text?: string[][];
+    header_text_named_params?: NamedParamExample[];
+    body_text_named_params?: NamedParamExample[];
   };
+}
+
+interface NamedParamExample {
+  param_name: string;
+  example: string;
+}
+
+/** Zip canonical variable keys with their sample values. */
+function namedExamples(keys: string[], samples: string[]): NamedParamExample[] {
+  return keys.map((param_name, i) => ({ param_name, example: samples[i] ?? '' }));
+}
+
+function templateParameterFormat(payload: TemplatePayload): ParameterFormat {
+  return detectParameterFormat(
+    payload.body_text,
+    payload.header_type === 'text' ? payload.header_content : undefined,
+  );
 }
 
 interface MetaButtonPayload {
@@ -46,7 +70,15 @@ function buildHeaderComponent(payload: TemplatePayload): MetaComponent | null {
       text: header_content,
     };
     if (headerSample && headerSample.length > 0) {
-      component.example = { header_text: headerSample };
+      component.example =
+        templateParameterFormat(payload) === 'NAMED'
+          ? {
+              header_text_named_params: namedExamples(
+                extractVariableKeys(header_content ?? ''),
+                headerSample,
+              ),
+            }
+          : { header_text: headerSample };
     }
     return component;
   }
@@ -73,10 +105,19 @@ function buildBodyComponent(payload: TemplatePayload): MetaComponent {
   };
   const bodySample = payload.sample_values?.body;
   if (bodySample && bodySample.length > 0) {
-    // Meta expects body_text as a 2D array — outer is "examples",
-    // inner is the values for each variable. We submit a single
-    // example row.
-    component.example = { body_text: [bodySample] };
+    if (templateParameterFormat(payload) === 'NAMED') {
+      component.example = {
+        body_text_named_params: namedExamples(
+          extractVariableKeys(payload.body_text),
+          bodySample,
+        ),
+      };
+    } else {
+      // Meta expects body_text as a 2D array — outer is "examples",
+      // inner is the values for each variable. We submit a single
+      // example row.
+      component.example = { body_text: [bodySample] };
+    }
   }
   return component;
 }
@@ -118,6 +159,8 @@ export interface MetaTemplateSubmitPayload {
   name: string;
   category: 'MARKETING' | 'UTILITY' | 'AUTHENTICATION';
   language: string;
+  /** Only sent for named templates; Meta defaults to POSITIONAL. */
+  parameter_format?: 'NAMED';
   components: MetaComponent[];
 }
 
@@ -150,6 +193,9 @@ export function buildMetaTemplatePayload(
     name: payload.name,
     category: CATEGORY_TO_META[payload.category],
     language: payload.language,
+    ...(templateParameterFormat(payload) === 'NAMED' && {
+      parameter_format: 'NAMED' as const,
+    }),
     components,
   };
 }

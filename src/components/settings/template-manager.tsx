@@ -12,6 +12,8 @@ import {
   Pencil,
   RotateCcw,
   Upload,
+  Eye,
+  Braces,
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import {
@@ -49,9 +51,14 @@ import type {
 } from '@/types';
 import { templateStatusConfig } from '@/lib/template-status';
 import {
-  extractVariableIndices,
+  DYNAMIC_URL_SUFFIX,
+  extractVariableKeys,
+  isDynamicUrl,
   TEMPLATE_LIMITS,
+  validateBody,
+  validateTemplatePayload,
 } from '@/lib/whatsapp/template-validators';
+import { TemplatePreview, type TemplatePreviewData } from './template-preview';
 
 const CATEGORIES = ['Marketing', 'Utility', 'Authentication'] as const;
 type HeaderFormat = 'none' | 'text' | 'image' | 'video' | 'document';
@@ -72,7 +79,11 @@ interface TemplateFormData {
   header_media_url: string;
   header_sample: string;
   body_text: string;
-  body_samples: string[];
+  /**
+   * Keyed by variable key ("1" or "first_name") rather than position so
+   * a sample stays attached to its variable while the body is edited.
+   */
+  body_samples: Record<string, string>;
   footer_text: string;
   buttons: TemplateButton[];
 }
@@ -86,7 +97,7 @@ const emptyForm: TemplateFormData = {
   header_media_url: '',
   header_sample: '',
   body_text: '',
-  body_samples: [],
+  body_samples: {},
   footer_text: '',
   buttons: [],
 };
@@ -110,6 +121,36 @@ const COMMON_LANGUAGE_CODES = [
   'tr',
   'lt',
 ];
+
+function templateToPreviewData(template: MessageTemplate): TemplatePreviewData {
+  const body_samples: Record<string, string> = {};
+  extractVariableKeys(template.body_text).forEach((k, i) => {
+    body_samples[k] = template.sample_values?.body?.[i] ?? '';
+  });
+  return {
+    header_format: (template.header_type ?? 'none') as HeaderFormat,
+    header_content: template.header_content ?? '',
+    header_media_url: template.header_media_url ?? '',
+    header_sample: template.sample_values?.header?.[0] ?? '',
+    body_text: template.body_text,
+    body_samples,
+    footer_text: template.footer_text ?? '',
+    buttons: template.buttons ?? [],
+  };
+}
+
+/** Small "12/60" counter shown beside length-capped fields. */
+function CharCount({ value, max }: { value: string; max: number }) {
+  return (
+    <span
+      className={`text-[11px] tabular-nums ${
+        value.length >= max ? 'text-amber-400' : 'text-muted-foreground'
+      }`}
+    >
+      {value.length}/{max}
+    </span>
+  );
+}
 
 function emptyButton(type: TemplateButton['type']): TemplateButton {
   switch (type) {
@@ -150,32 +191,54 @@ export function TemplateManager() {
   // submit route turns that into a Meta Resumable-Upload handle.
   const [uploadingHeader, setUploadingHeader] = useState(false);
   const headerFileRef = useRef<HTMLInputElement>(null);
+  const bodyRef = useRef<HTMLTextAreaElement>(null);
+  // Read-only preview of an existing template from the list.
+  const [previewTemplate, setPreviewTemplate] =
+    useState<MessageTemplate | null>(null);
 
-  // Body variable indices — `[1, 2, 3]` for "{{1}} {{2}} {{3}}". We
-  // re-run the extractor on every render to keep the sample-value rows
-  // in sync with what the user typed.
-  const bodyVarCount = useMemo(
-    () => extractVariableIndices(form.body_text).length,
+  // Body variable keys — `["1","2"]` for "{{1}} {{2}}" or
+  // `["name","order_id"]` for named variables, in canonical order.
+  // Re-derived on every edit so the sample rows track what was typed.
+  const bodyKeys = useMemo(
+    () => extractVariableKeys(form.body_text),
     [form.body_text],
   );
-  const headerVarCount = useMemo(
+  const headerKey = useMemo(
     () =>
       form.header_format === 'text'
-        ? extractVariableIndices(form.header_content).length
-        : 0,
+        ? extractVariableKeys(form.header_content)[0] ?? null
+        : null,
     [form.header_format, form.header_content],
   );
 
-  // Resize body_samples so it always has exactly bodyVarCount entries.
-  // (We mutate via setForm in an effect so React owns the state.)
-  useEffect(() => {
-    setForm((prev) => {
-      if (prev.body_samples.length === bodyVarCount) return prev;
-      const next = prev.body_samples.slice(0, bodyVarCount);
-      while (next.length < bodyVarCount) next.push('');
-      return { ...prev, body_samples: next };
-    });
-  }, [bodyVarCount]);
+  // Live body check (bad variable names, mixed styles, gaps, leading /
+  // trailing variable) so problems show while typing, not after submit.
+  const bodyError = useMemo(() => {
+    if (!form.body_text.trim()) return null;
+    try {
+      validateBody(form.body_text);
+      return null;
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+  }, [form.body_text]);
+
+  const footerHasVar = /\{\{[^{}]*\}\}/.test(form.footer_text);
+
+  const missingSampleCount =
+    bodyKeys.filter((k) => !form.body_samples[k]?.trim()).length +
+    (headerKey && !form.header_sample.trim() ? 1 : 0);
+
+  const previewData: TemplatePreviewData = {
+    header_format: form.header_format,
+    header_content: form.header_content,
+    header_media_url: form.header_media_url,
+    header_sample: form.header_sample,
+    body_text: form.body_text,
+    body_samples: form.body_samples,
+    footer_text: form.footer_text,
+    buttons: form.buttons,
+  };
 
   useEffect(() => {
     if (authLoading) return;
@@ -207,8 +270,9 @@ export function TemplateManager() {
 
   function buildSubmitPayload() {
     const sample_values: TemplateSampleValues = {};
-    if (form.body_samples.some((v) => v.trim())) {
-      sample_values.body = form.body_samples.map((v) => v.trim());
+    const bodySamples = bodyKeys.map((k) => (form.body_samples[k] ?? '').trim());
+    if (bodySamples.some(Boolean)) {
+      sample_values.body = bodySamples;
     }
     if (form.header_format === 'text' && form.header_sample.trim()) {
       sample_values.header = [form.header_sample.trim()];
@@ -244,7 +308,7 @@ export function TemplateManager() {
       header_media_url: template.header_media_url ?? '',
       header_sample: template.sample_values?.header?.[0] ?? '',
       body_text: template.body_text,
-      body_samples: template.sample_values?.body ?? [],
+      body_samples: templateToPreviewData(template).body_samples,
       footer_text: template.footer_text ?? '',
       buttons: template.buttons ?? [],
     });
@@ -261,6 +325,15 @@ export function TemplateManager() {
     // AUTHENTICATION is blocked by the persistent banner + disabled
     // submit button; this is a defensive second line of defense.
     if (form.category === 'Authentication') return;
+    // Same validators the API runs — catch mistakes before the round
+    // trip. Image headers may still lack a handle here; the server
+    // derives it from header_media_url, so only that's required.
+    try {
+      validateTemplatePayload(buildSubmitPayload());
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : t('toastSubmitFailed'));
+      return;
+    }
     try {
       setSubmitting(true);
       const isEdit = editingId !== null;
@@ -439,6 +512,41 @@ export function TemplateManager() {
     }));
   }
 
+  /**
+   * Insert a variable at the cursor. Continues the body's numbering
+   * when it already uses {{1}}-style variables; otherwise inserts a
+   * named placeholder with its name selected so typing renames it.
+   */
+  function insertVariable() {
+    const el = bodyRef.current;
+    const text = form.body_text;
+    const start = el?.selectionStart ?? text.length;
+    const end = el?.selectionEnd ?? text.length;
+    const numbered = bodyKeys.length > 0 && bodyKeys.every((k) => /^\d+$/.test(k));
+    let name: string;
+    if (numbered) {
+      name = String(bodyKeys.length + 1);
+    } else {
+      let n = 1;
+      name = 'variable';
+      while (bodyKeys.includes(name)) name = `variable_${++n}`;
+    }
+    const before = text.slice(0, start);
+    const needsSpace = before.length > 0 && !/\s$/.test(before);
+    const token = `${needsSpace ? ' ' : ''}{{${name}}}`;
+    const next = before + token + text.slice(end);
+    if (next.length > TEMPLATE_LIMITS.bodyMaxLength) return;
+    setForm((prev) => ({ ...prev, body_text: next }));
+    // Select the name inside the braces once React has re-rendered.
+    requestAnimationFrame(() => {
+      if (!el) return;
+      el.focus();
+      const nameStart = start + token.length - name.length - 2;
+      if (numbered) el.setSelectionRange(start + token.length, start + token.length);
+      else el.setSelectionRange(nameStart, nameStart + name.length);
+    });
+  }
+
   function addButton() {
     if (form.buttons.length >= TEMPLATE_LIMITS.maxButtonsTotal) return;
     setForm((prev) => ({
@@ -571,6 +679,16 @@ export function TemplateManager() {
                     )}
                   </div>
                   <div className="flex items-center gap-1 shrink-0 ml-2">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => setPreviewTemplate(template)}
+                      title={t('preview')}
+                      aria-label={t('preview')}
+                      className="text-muted-foreground hover:text-primary hover:bg-primary/10 h-8 w-8"
+                    >
+                      <Eye className="size-4" />
+                    </Button>
                     {statusKey === 'APPROVED' && (
                       <Button
                         variant="ghost"
@@ -638,7 +756,7 @@ export function TemplateManager() {
           }
         }}
       >
-        <DialogContent className="bg-popover border-border sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="bg-popover border-border sm:max-w-5xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="text-popover-foreground">
               {editingId ? t('dialogEditTitle') : t('dialogNewTitle')}
@@ -657,7 +775,8 @@ export function TemplateManager() {
             </div>
           )}
 
-          <div className="space-y-4 py-2">
+          <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+          <div className="min-w-0 space-y-4 py-2">
             <div className="space-y-2">
               <Label className="text-muted-foreground">{t('templateName')}</Label>
               <Input
@@ -784,11 +903,17 @@ export function TemplateManager() {
                     maxLength={TEMPLATE_LIMITS.headerTextMaxLength}
                     className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
                   />
-                  {headerVarCount > 0 && (
+                  <div className="flex justify-end">
+                    <CharCount
+                      value={form.header_content}
+                      max={TEMPLATE_LIMITS.headerTextMaxLength}
+                    />
+                  </div>
+                  {headerKey && (
                     <Input
                       id="template-header-sample"
                       aria-label={t('headerSampleAria')}
-                      placeholder={t('headerSamplePlaceholder')}
+                      placeholder={t('headerSamplePlaceholder', { var: `{{${headerKey}}}` })}
                       value={form.header_sample}
                       onChange={(e) =>
                         setForm({ ...form, header_sample: e.target.value })
@@ -863,42 +988,69 @@ export function TemplateManager() {
             </div>
 
             <div className="space-y-2">
-              <Label className="text-muted-foreground">{t('bodyText')}</Label>
+              <div className="flex items-center justify-between gap-2">
+                <Label className="text-muted-foreground">{t('bodyText')}</Label>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={insertVariable}
+                  className="h-7 px-2 text-xs text-primary hover:bg-primary/10 hover:text-primary"
+                >
+                  <Braces className="size-3.5" />
+                  {t('addVariable')}
+                </Button>
+              </div>
               <Textarea
+                ref={bodyRef}
+                aria-invalid={bodyError ? true : undefined}
                 placeholder={t('bodyPlaceholder')}
                 value={form.body_text}
                 onChange={(e) =>
                   setForm({ ...form, body_text: e.target.value })
                 }
-                rows={4}
+                rows={5}
                 maxLength={TEMPLATE_LIMITS.bodyMaxLength}
                 className="bg-muted border-border text-foreground placeholder:text-muted-foreground resize-none"
               />
-              <p className="text-[11px] text-muted-foreground">
-                {t('bodyHint')}
-              </p>
+              <div className="flex items-start justify-between gap-3">
+                {bodyError ? (
+                  <p className="flex items-start gap-1 text-[11px] text-red-400">
+                    <AlertCircle className="mt-px size-3 shrink-0" />
+                    {bodyError}
+                  </p>
+                ) : (
+                  <p className="text-[11px] text-muted-foreground">{t('bodyHint')}</p>
+                )}
+                <CharCount value={form.body_text} max={TEMPLATE_LIMITS.bodyMaxLength} />
+              </div>
 
-              {bodyVarCount > 0 && (
+              {bodyKeys.length > 0 && (
                 <div className="space-y-1.5 pt-1">
                   <Label className="text-[11px] text-muted-foreground">
                     {t('sampleValues')}
                   </Label>
-                  {form.body_samples.map((val, i) => {
-                    const inputId = `template-body-sample-${i}`;
+                  {bodyKeys.map((key) => {
+                    const token = `{{${key}}}`;
                     return (
-                      <Input
-                        key={i}
-                        id={inputId}
-                        aria-label={t('sampleAria', { var: `{{${i + 1}}}` })}
-                        placeholder={t('samplePlaceholder', { var: `{{${i + 1}}}` })}
-                        value={val}
-                        onChange={(e) => {
-                          const next = [...form.body_samples];
-                          next[i] = e.target.value;
-                          setForm({ ...form, body_samples: next });
-                        }}
-                        className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
-                      />
+                      <div key={key} className="flex items-center gap-2">
+                        <span className="w-32 shrink-0 truncate rounded bg-primary/10 px-2 py-1.5 font-mono text-xs text-primary" title={token}>
+                          {token}
+                        </span>
+                        <Input
+                          id={`template-body-sample-${key}`}
+                          aria-label={t('sampleAria', { var: token })}
+                          placeholder={t('samplePlaceholder', { var: token })}
+                          value={form.body_samples[key] ?? ''}
+                          onChange={(e) =>
+                            setForm((prev) => ({
+                              ...prev,
+                              body_samples: { ...prev.body_samples, [key]: e.target.value },
+                            }))
+                          }
+                          className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
+                        />
+                      </div>
                     );
                   })}
                 </div>
@@ -914,8 +1066,20 @@ export function TemplateManager() {
                   setForm({ ...form, footer_text: e.target.value })
                 }
                 maxLength={TEMPLATE_LIMITS.footerMaxLength}
+                aria-invalid={footerHasVar || undefined}
                 className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
               />
+              <div className="flex items-start justify-between gap-3">
+                <p className="flex items-start gap-1 text-[11px] text-red-400">
+                  {footerHasVar && (
+                    <>
+                      <AlertCircle className="mt-px size-3 shrink-0" />
+                      {t('footerVarError')}
+                    </>
+                  )}
+                </p>
+                <CharCount value={form.footer_text} max={TEMPLATE_LIMITS.footerMaxLength} />
+              </div>
             </div>
 
             <div className="space-y-2">
@@ -1004,28 +1168,89 @@ export function TemplateManager() {
                           <X className="size-3.5" />
                         </Button>
                       </div>
-                      {btn.type === 'URL' && (
-                        <div className="space-y-1 pl-1">
-                          <Input
-                            placeholder={t('urlPlaceholder')}
-                            value={btn.url}
-                            onChange={(e) =>
-                              updateButton(i, { url: e.target.value })
-                            }
-                            className="bg-muted border-border text-foreground placeholder:text-muted-foreground h-8 text-xs"
-                          />
-                          {extractVariableIndices(btn.url).length > 0 && (
-                            <Input
-                              placeholder={t('urlSamplePlaceholder')}
-                              value={btn.example ?? ''}
-                              onChange={(e) =>
-                                updateButton(i, { example: e.target.value })
-                              }
-                              className="bg-muted border-border text-foreground placeholder:text-muted-foreground h-8 text-xs"
-                            />
-                          )}
-                        </div>
-                      )}
+                      {btn.type === 'URL' && (() => {
+                        const dynamic = isDynamicUrl(btn.url);
+                        const base = dynamic
+                          ? btn.url.trim().replace(/\{\{\s*1\s*\}\}$/, '')
+                          : btn.url;
+                        // Static URLs can't carry variables; dynamic ones only
+                        // the trailing {{1}} we append ourselves.
+                        const strayVar = /\{\{[^{}]*\}\}/.test(base);
+                        return (
+                          <div className="space-y-1.5 pl-1">
+                            <div className="flex items-center gap-2">
+                              <Select
+                                value={dynamic ? 'dynamic' : 'static'}
+                                onValueChange={(val) => {
+                                  if (!val) return;
+                                  const clean = base.replace(/\{\{[^{}]*\}\}/g, '');
+                                  updateButton(i, {
+                                    url: val === 'dynamic' ? clean + DYNAMIC_URL_SUFFIX : clean,
+                                  });
+                                }}
+                              >
+                                <SelectTrigger
+                                  aria-label={t('urlType')}
+                                  className="w-32 shrink-0 bg-muted border-border text-foreground h-8 text-xs"
+                                >
+                                  <SelectValue>
+                                    {(v: string) => (v === 'dynamic' ? t('urlDynamic') : t('urlStatic'))}
+                                  </SelectValue>
+                                </SelectTrigger>
+                                <SelectContent className="bg-popover border-border">
+                                  <SelectItem value="static" className="text-popover-foreground focus:bg-muted focus:text-popover-foreground">
+                                    {t('urlStatic')}
+                                  </SelectItem>
+                                  <SelectItem value="dynamic" className="text-popover-foreground focus:bg-muted focus:text-popover-foreground">
+                                    {t('urlDynamic')}
+                                  </SelectItem>
+                                </SelectContent>
+                              </Select>
+                              <div className="flex min-w-0 flex-1 items-center rounded-md border border-border bg-muted">
+                                <input
+                                  placeholder={dynamic ? t('urlBasePlaceholder') : t('urlPlaceholder')}
+                                  value={base}
+                                  aria-invalid={strayVar || undefined}
+                                  onChange={(e) =>
+                                    updateButton(i, {
+                                      url: dynamic ? e.target.value + DYNAMIC_URL_SUFFIX : e.target.value,
+                                    })
+                                  }
+                                  className="h-8 min-w-0 flex-1 bg-transparent px-2.5 text-xs text-foreground outline-none placeholder:text-muted-foreground"
+                                />
+                                {dynamic && (
+                                  <span className="mr-1 shrink-0 rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[11px] text-primary">
+                                    {DYNAMIC_URL_SUFFIX}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            {strayVar && (
+                              <p className="flex items-start gap-1 text-[11px] text-red-400">
+                                <AlertCircle className="mt-px size-3 shrink-0" />
+                                {t('urlVarError')}
+                              </p>
+                            )}
+                            {dynamic && !strayVar && (
+                              <>
+                                <Input
+                                  placeholder={t('urlSamplePlaceholder')}
+                                  value={btn.example ?? ''}
+                                  onChange={(e) =>
+                                    updateButton(i, { example: e.target.value })
+                                  }
+                                  className="bg-muted border-border text-foreground placeholder:text-muted-foreground h-8 text-xs"
+                                />
+                                <p className="text-[11px] text-muted-foreground break-all">
+                                  {t('urlDynamicHint', {
+                                    url: base + (btn.example?.trim() || DYNAMIC_URL_SUFFIX),
+                                  })}
+                                </p>
+                              </>
+                            )}
+                          </div>
+                        );
+                      })()}
                       {btn.type === 'PHONE_NUMBER' && (
                         <Input
                           placeholder={t('phonePlaceholder')}
@@ -1053,6 +1278,23 @@ export function TemplateManager() {
             </div>
           </div>
 
+          <aside className="space-y-2 py-2 lg:sticky lg:top-0 lg:self-start">
+            <div className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
+              <Eye className="size-4" />
+              {t('preview')}
+            </div>
+            <TemplatePreview data={previewData} />
+            {missingSampleCount > 0 && (
+              <p className="text-[11px] text-amber-400">
+                {t('missingSamples', { count: missingSampleCount })}
+              </p>
+            )}
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              {t('previewHint')}
+            </p>
+          </aside>
+          </div>
+
           <DialogFooter className="bg-popover border-border">
             <Button
               variant="outline"
@@ -1078,6 +1320,24 @@ export function TemplateManager() {
               )}
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={previewTemplate !== null}
+        onOpenChange={(open) => {
+          if (!open) setPreviewTemplate(null);
+        }}
+      >
+        <DialogContent className="bg-popover border-border sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="text-popover-foreground">
+              {previewTemplate?.name}
+            </DialogTitle>
+          </DialogHeader>
+          {previewTemplate && (
+            <TemplatePreview data={templateToPreviewData(previewTemplate)} />
+          )}
         </DialogContent>
       </Dialog>
 

@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { decrypt } from '@/lib/whatsapp/encryption'
 import { normalizeStatus } from '@/lib/whatsapp/template-status-normalize'
 import type { TemplateButton, TemplateSampleValues } from '@/types'
+import { extractVariableKeys } from '@/lib/whatsapp/template-validators'
 
 /**
  * Sync message templates from Meta → local message_templates table.
@@ -37,6 +38,8 @@ interface MetaTemplateComponent {
     header_text?: string[]
     header_handle?: string[]
     body_text?: string[][]
+    header_text_named_params?: { param_name: string; example: string }[]
+    body_text_named_params?: { param_name: string; example: string }[]
   }
 }
 
@@ -107,14 +110,29 @@ function parseButtons(metaButtons: MetaButton[] | undefined): TemplateButton[] {
   return out
 }
 
+function alignNamed(
+  text: string | undefined,
+  named: { param_name: string; example: string }[] | undefined,
+): string[] | undefined {
+  if (!text || !named?.length) return undefined
+  const byName = new Map(named.map((p) => [p.param_name, p.example]))
+  return extractVariableKeys(text).map((k) => byName.get(k) ?? '')
+}
+
 function extractSampleValues(
   body: MetaTemplateComponent | undefined,
   header: MetaTemplateComponent | undefined,
 ): TemplateSampleValues | null {
   // Meta returns body_text as a 2D array — one row per example set.
   // We take the first row (most templates have exactly one).
-  const bodySample = body?.example?.body_text?.[0]
-  const headerSample = header?.example?.header_text
+  // Named templates carry {param_name, example} pairs instead; realign
+  // them to the canonical key order the rest of the app uses.
+  const bodySample =
+    body?.example?.body_text?.[0] ??
+    alignNamed(body?.text, body?.example?.body_text_named_params)
+  const headerSample =
+    header?.example?.header_text ??
+    alignNamed(header?.text, header?.example?.header_text_named_params)
   if (!bodySample?.length && !headerSample?.length) return null
   const sv: TemplateSampleValues = {}
   if (bodySample?.length) sv.body = bodySample

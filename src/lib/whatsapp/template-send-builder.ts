@@ -31,7 +31,11 @@
  */
 
 import type { MessageTemplate, TemplateButton } from '@/types';
-import { extractVariableIndices } from './template-validators';
+import {
+  detectParameterFormat,
+  extractVariableIndices,
+  extractVariableKeys,
+} from './template-validators';
 
 export interface SendTimeParams {
   /** Values for body {{1}}, {{2}}, … indexed by variable position. */
@@ -62,12 +66,21 @@ export type MetaSendComponent =
     };
 
 type MetaSendParameter =
-  | { type: 'text'; text: string }
+  | { type: 'text'; text: string; parameter_name?: string }
   | { type: 'image'; image: { link?: string; id?: string } }
   | { type: 'video'; video: { link?: string; id?: string } }
   | { type: 'document'; document: { link?: string; id?: string } }
   | { type: 'coupon_code'; coupon_code: string }
   | { type: 'payload'; payload: string };
+
+function isNamedTemplate(template: MessageTemplate): boolean {
+  return (
+    detectParameterFormat(
+      template.body_text,
+      template.header_type === 'text' ? template.header_content : undefined,
+    ) === 'NAMED'
+  );
+}
 
 function buildHeaderComponent(
   template: MessageTemplate,
@@ -80,17 +93,21 @@ function buildHeaderComponent(
     // TEXT header with {{1}} → need a value. Static text headers
     // (no variables) just ride along inside the template itself; no
     // header component required on send.
-    const varCount = extractVariableIndices(template.header_content ?? '').length;
-    if (varCount === 0) return null;
+    const keys = extractVariableKeys(template.header_content ?? '');
+    if (keys.length === 0) return null;
     const value = params.headerText;
     if (!value || !value.trim()) {
       throw new Error(
-        'Header text variable {{1}} requires a value — pass headerText.',
+        `Header text variable {{${keys[0]}}} requires a value — pass headerText.`,
       );
     }
     return {
       type: 'header',
-      parameters: [{ type: 'text', text: value }],
+      parameters: [
+        isNamedTemplate(template)
+          ? { type: 'text', text: value, parameter_name: keys[0] }
+          : { type: 'text', text: value },
+      ],
     };
   }
 
@@ -127,7 +144,8 @@ function buildBodyComponent(
   template: MessageTemplate,
   params: SendTimeParams,
 ): MetaSendComponent | null {
-  const varCount = extractVariableIndices(template.body_text).length;
+  const keys = extractVariableKeys(template.body_text);
+  const varCount = keys.length;
   const body = params.body ?? [];
   if (varCount === 0 && body.length === 0) return null;
   if (body.length < varCount) {
@@ -138,9 +156,16 @@ function buildBodyComponent(
   // Trim to the variable count — extra values are dropped silently so
   // a legacy caller that passes too many doesn't error out.
   const values = body.slice(0, varCount);
+  // Named templates are matched by parameter_name; `values` is aligned
+  // to the canonical key order from extractVariableKeys.
+  const named = isNamedTemplate(template);
   return {
     type: 'body',
-    parameters: values.map((text) => ({ type: 'text', text: String(text) })),
+    parameters: values.map((text, i) =>
+      named
+        ? { type: 'text', text: String(text), parameter_name: keys[i] }
+        : { type: 'text', text: String(text) },
+    ),
   };
 }
 

@@ -48,6 +48,7 @@ import { selectByChunks } from '@/lib/supabase/select-all'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import { findOrCreateConversationRow } from '@/lib/whatsapp/resolve-conversation'
 import { renderTemplateBody } from '@/lib/whatsapp/template-render'
+import { extractVariableKeys, isDynamicUrl } from '@/lib/whatsapp/template-validators'
 import {
   sendTemplateMessage,
   getPhoneSendingProfile,
@@ -64,6 +65,8 @@ import {
 import { isMessageTemplate } from '@/lib/whatsapp/template-row-guard'
 import type { SendTimeParams } from '@/lib/whatsapp/template-send-builder'
 import {
+  buttonVariableKey,
+  HEADER_VARIABLE_KEY,
   resolveVariables,
   fetchCustomValueIndex,
   type VariableMapping,
@@ -759,13 +762,21 @@ async function deliver(broadcast: ClaimedBroadcast, resumed: boolean): Promise<v
       templateRow?.body_text ?? null,
     )
     const variables = broadcast.template_variables ?? {}
+    const templateKeys = templateRow ? extractVariableKeys(templateRow.body_text) : undefined
     const headerType = templateRow?.header_type
     const headerMediaUrl = broadcast.header_media_url?.trim()
-    const messageParams: SendTimeParams | undefined =
+    const baseMessageParams: SendTimeParams =
       (headerType === 'image' || headerType === 'video' || headerType === 'document') &&
       headerMediaUrl
         ? { headerMediaUrl }
-        : undefined
+        : {}
+    // Per-contact values outside the body: a text-header variable and
+    // dynamic URL-button suffixes, mapped in the wizard under reserved keys.
+    const needsHeaderText =
+      headerType === 'text' && extractVariableKeys(templateRow?.header_content ?? '').length > 0
+    const dynamicButtonIndices = (templateRow?.buttons ?? []).flatMap((b, i) =>
+      b.type === 'URL' && isDynamicUrl(b.url) ? [i] : [],
+    )
 
     let succeeded = 0
     let failed = 0
@@ -791,7 +802,20 @@ async function deliver(broadcast: ClaimedBroadcast, resumed: boolean): Promise<v
         return
       }
 
-      const params = resolveVariables(variables, contact, customValues)
+      const params = resolveVariables(variables, contact, customValues, templateKeys)
+      const messageParams: SendTimeParams = { ...baseMessageParams }
+      if (needsHeaderText) {
+        messageParams.headerText = resolveVariables(variables, contact, customValues, [
+          HEADER_VARIABLE_KEY,
+        ])[0]
+      }
+      if (dynamicButtonIndices.length > 0) {
+        const keys = dynamicButtonIndices.map(buttonVariableKey)
+        const values = resolveVariables(variables, contact, customValues, keys)
+        messageParams.buttonParams = Object.fromEntries(
+          dynamicButtonIndices.map((idx, n) => [idx, values[n]]),
+        )
+      }
       let messageId: string | null = null
       let lastError: unknown = null
       let retry = false

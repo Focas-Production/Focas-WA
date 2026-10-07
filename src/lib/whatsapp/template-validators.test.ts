@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  detectParameterFormat,
   extractVariableIndices,
+  extractVariableKeys,
   TEMPLATE_LIMITS,
   validateBody,
   validateButtons,
@@ -57,7 +59,38 @@ describe('validateBody', () => {
     expect(() => validateBody('Hi {{1}} {{3}}')).toThrow(/contiguous/);
   });
   it('accepts contiguous variables', () => {
-    expect(validateBody('Hi {{1}} {{2}}')).toEqual([1, 2]);
+    expect(validateBody('Hi {{1}} {{2}}, welcome!')).toEqual(['1', '2']);
+  });
+  it('accepts named variables in canonical (alphabetical) order', () => {
+    expect(validateBody('Hi {{name}}, order {{order_id}} {{amount}} ok')).toEqual([
+      'amount',
+      'name',
+      'order_id',
+    ]);
+  });
+  it('rejects mixed numbered and named variables', () => {
+    expect(() => validateBody('Hi {{name}}, order {{1}} ok')).toThrow(/mixes/);
+  });
+  it('rejects malformed variable names with a suggestion', () => {
+    expect(() => validateBody('Hi {{First Name}}, ok')).toThrow(/\{\{first_name\}\}/);
+  });
+  it('rejects a body that starts or ends with a variable', () => {
+    expect(() => validateBody('{{name}} is here')).toThrow(/start or end/);
+    expect(() => validateBody('Hello {{name}}')).toThrow(/start or end/);
+  });
+});
+
+describe('extractVariableKeys / detectParameterFormat', () => {
+  it('sorts positional keys numerically', () => {
+    expect(extractVariableKeys('a {{10}} b {{2}} c {{1}}')).toEqual(['1', '2', '10']);
+  });
+  it('dedupes and tolerates inner whitespace', () => {
+    expect(extractVariableKeys('{{ name }} and {{name}}')).toEqual(['name']);
+  });
+  it('detects NAMED vs POSITIONAL', () => {
+    expect(detectParameterFormat('Hi {{1}}')).toBe('POSITIONAL');
+    expect(detectParameterFormat('Hi {{name}}')).toBe('NAMED');
+    expect(detectParameterFormat('static', 'Hi {{name}}')).toBe('NAMED');
   });
 });
 
@@ -93,6 +126,27 @@ describe('validateHeader', () => {
     expect(() =>
       validateHeader({ header_type: 'text', header_content: 'Hello {{2}}' }),
     ).toThrow(/must be \{\{1\}\}/);
+  });
+  it('rejects named variables in URL buttons', () => {
+    expect(() =>
+      validateButtons([
+        { type: 'URL', text: 'Go', url: 'https://x.com/{{phone}}', example: '1' },
+      ]),
+    ).toThrow(/Dynamic URL/);
+  });
+  it('rejects {{1}} that is not at the end of the URL', () => {
+    expect(() =>
+      validateButtons([
+        { type: 'URL', text: 'Go', url: 'https://x.com/{{1}}/track', example: '1' },
+      ]),
+    ).toThrow(/very end/);
+  });
+  it('accepts a dynamic URL with an example', () => {
+    expect(() =>
+      validateButtons([
+        { type: 'URL', text: 'Go', url: 'https://x.com/orders/{{1}}', example: '42' },
+      ]),
+    ).not.toThrow();
   });
   it('image header requires a URL or handle', () => {
     expect(() => validateHeader({ header_type: 'image' })).toThrow(
@@ -204,7 +258,7 @@ describe('validateButtons', () => {
           example: 'foo',
         },
       ]),
-    ).toThrow(/must be \{\{1\}\}/);
+    ).toThrow(/only support a single \{\{1\}\}/);
   });
   it('rejects PHONE_NUMBER without phone_number', () => {
     expect(() =>
@@ -270,8 +324,19 @@ describe('validateTemplatePayload — integration', () => {
     expect(() =>
       validateTemplatePayload({
         ...baseValid,
-        body_text: 'Hi {{1}}',
+        body_text: 'Hi {{1}}, welcome',
       }),
     ).toThrow(/exactly 1 sample/);
+  });
+  it('rejects header and body using different variable styles', () => {
+    expect(() =>
+      validateTemplatePayload({
+        ...baseValid,
+        header_type: 'text',
+        header_content: 'Order {{1}}',
+        body_text: 'Hi {{name}}, welcome',
+        sample_values: { header: ['42'], body: ['John'] },
+      }),
+    ).toThrow(/same variable style/);
   });
 });

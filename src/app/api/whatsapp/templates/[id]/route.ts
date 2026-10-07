@@ -168,6 +168,7 @@ export async function PATCH(
           metaTemplateId: existing.meta_template_id,
           accessToken,
           components: metaPayload.components,
+          parameterFormat: metaPayload.parameter_format,
         })
       } catch (e) {
         const message = e instanceof Error ? e.message : 'Meta edit failed.'

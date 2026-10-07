@@ -21,7 +21,11 @@ import {
   LayoutTemplate,
   Loader2,
 } from "lucide-react";
-import { extractVariableIndices } from "@/lib/whatsapp/template-validators";
+import {
+  extractVariableIndices,
+  extractVariableKeys,
+} from "@/lib/whatsapp/template-validators";
+import { renderTemplateBody } from "@/lib/whatsapp/template-render";
 import { useTranslations } from "next-intl";
 
 export interface TemplateSendValues {
@@ -37,11 +41,11 @@ interface TemplatePickerProps {
 }
 
 function renderBodyPreview(body: string, params: string[]): string {
-  return body.replace(/\{\{(\d+)\}\}/g, (_, raw) => {
-    const idx = Number(raw) - 1;
-    const value = params[idx];
-    return value && value.trim().length > 0 ? value : `{{${raw}}}`;
-  });
+  // Blank inputs keep their placeholder visible in the preview.
+  return renderTemplateBody(
+    body,
+    params.map((v) => (v && v.trim().length > 0 ? v : undefined)),
+  );
 }
 
 interface UrlButtonSlot {
@@ -56,22 +60,22 @@ interface UrlButtonSlot {
  * send-message path doesn't 400 on missing parameters.
  */
 function collectVariableSlots(template: MessageTemplate): {
-  bodyVars: number[];
-  headerVarCount: number;
+  bodyVars: string[];
+  headerVarKey: string | null;
   urlButtonSlots: UrlButtonSlot[];
 } {
-  const bodyVars = extractVariableIndices(template.body_text);
-  const headerVarCount =
+  const bodyVars = extractVariableKeys(template.body_text);
+  const headerVarKey =
     template.header_type === "text" && template.header_content
-      ? extractVariableIndices(template.header_content).length
-      : 0;
+      ? extractVariableKeys(template.header_content)[0] ?? null
+      : null;
   const urlButtonSlots: UrlButtonSlot[] = [];
   (template.buttons ?? []).forEach((b, i) => {
     if (b.type === "URL" && extractVariableIndices(b.url).length > 0) {
       urlButtonSlots.push({ index: i, text: b.text, url: b.url });
     }
   });
-  return { bodyVars, headerVarCount, urlButtonSlots };
+  return { bodyVars, headerVarKey, urlButtonSlots };
 }
 
 export function TemplatePicker({
@@ -148,7 +152,7 @@ export function TemplatePicker({
     const slots = collectVariableSlots(template);
     const noInputsNeeded =
       slots.bodyVars.length === 0 &&
-      slots.headerVarCount === 0 &&
+      slots.headerVarKey === null &&
       slots.urlButtonSlots.length === 0;
     if (noInputsNeeded) {
       onSelect(template, { body: [] });
@@ -182,7 +186,7 @@ export function TemplatePicker({
     !!selected &&
     !!slots &&
     slots.bodyVars.every((_, i) => (params[i] ?? "").trim().length > 0) &&
-    (slots.headerVarCount === 0 || headerText.trim().length > 0) &&
+    (slots.headerVarKey === null || headerText.trim().length > 0) &&
     slots.urlButtonSlots.every(
       (s) => (buttonParams[s.index] ?? "").trim().length > 0,
     );
@@ -261,10 +265,10 @@ export function TemplatePicker({
                 </p>
               )}
             </div>
-            {slots && slots.headerVarCount > 0 && (
+            {slots?.headerVarKey && (
               <div className="space-y-1">
                 <Label className="text-xs text-popover-foreground">
-                  {`Header {{1}}`}
+                  {`Header {{${slots.headerVarKey}}}`}
                 </Label>
                 <Input
                   value={headerText}

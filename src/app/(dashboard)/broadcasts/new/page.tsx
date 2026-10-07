@@ -278,7 +278,12 @@ function NewBroadcastPageInner() {
           {currentStep === 0 && (
             <Step1ChooseTemplate
               selectedTemplate={template}
-              onSelect={setTemplate}
+              onSelect={(next) => {
+                // Mappings are keyed by the old template's placeholders —
+                // drop them when switching so none leak into the new one.
+                if (next?.id !== template?.id) setVariables({});
+                setTemplate(next);
+              }}
               onNext={() => setCurrentStep(1)}
               onBack={() => router.push('/broadcasts')}
             />

@@ -72,6 +72,101 @@ export function extractVariableIndices(text: string): number[] {
 }
 
 /**
+ * Meta supports two placeholder styles per template:
+ *   - POSITIONAL: `{{1}}`, `{{2}}` …
+ *   - NAMED:      `{{first_name}}`, `{{order_id}}` … (lowercase,
+ *                 digits, underscores; sent with `parameter_format:
+ *                 "NAMED"` and matched by `parameter_name` at send).
+ * A single template can't mix the two.
+ */
+export type ParameterFormat = 'POSITIONAL' | 'NAMED';
+
+/** Meta's rule for named parameter names. */
+export const NAMED_PARAM_REGEX = /^[a-z][a-z0-9_]*$/;
+
+const ANY_PLACEHOLDER = /\{\{\s*([^{}]*?)\s*\}\}/g;
+
+/** Raw placeholder tokens (trimmed inner text) in order of appearance. */
+function rawPlaceholders(text: string): string[] {
+  return [...text.matchAll(ANY_PLACEHOLDER)].map((m) => m[1]);
+}
+
+/**
+ * Canonical ordering for variable keys. Positional keys sort
+ * numerically; named keys alphabetically. Must match the order that
+ * `resolveVariables` emits values in, since send-time values travel as
+ * a plain `string[]` aligned to this order.
+ */
+export function compareVariableKeys(a: string, b: string): number {
+  const an = Number(a);
+  const bn = Number(b);
+  if (Number.isFinite(an) && Number.isFinite(bn)) return an - bn;
+  return a.localeCompare(b);
+}
+
+/**
+ * Sorted, deduplicated variable keys — `["1","2"]` for positional,
+ * `["first_name","order_id"]` for named. Malformed tokens (empty,
+ * uppercase, spaces) are ignored here; `validateVariableTokens`
+ * reports them.
+ */
+export function extractVariableKeys(text: string): string[] {
+  const set = new Set<string>();
+  for (const raw of rawPlaceholders(text)) {
+    if (/^\d+$/.test(raw)) {
+      if (Number(raw) >= 1) set.add(String(Number(raw)));
+    } else if (NAMED_PARAM_REGEX.test(raw)) {
+      set.add(raw);
+    }
+  }
+  return [...set].sort(compareVariableKeys);
+}
+
+/** NAMED when any key is non-numeric; POSITIONAL otherwise. */
+export function detectParameterFormat(
+  ...texts: Array<string | null | undefined>
+): ParameterFormat {
+  for (const t of texts) {
+    if (!t) continue;
+    if (extractVariableKeys(t).some((k) => !/^\d+$/.test(k))) return 'NAMED';
+  }
+  return 'POSITIONAL';
+}
+
+/**
+ * Reject placeholders Meta would refuse: malformed names and a mix of
+ * positional + named within the same field.
+ */
+function validateVariableTokens(text: string, where: string): void {
+  let sawNumeric = false;
+  let sawNamed = false;
+  for (const raw of rawPlaceholders(text)) {
+    if (/^\d+$/.test(raw)) {
+      sawNumeric = true;
+      continue;
+    }
+    if (!NAMED_PARAM_REGEX.test(raw)) {
+      const suggestion = raw
+        .toLowerCase()
+        .replace(/[^a-z0-9_]+/g, '_')
+        .replace(/^[^a-z]+/, '')
+        .replace(/_+$/, '');
+      throw new Error(
+        `${where} variable {{${raw}}} is invalid — use lowercase letters, digits and underscores, starting with a letter${
+          suggestion ? ` (e.g. {{${suggestion}}})` : ''
+        }.`,
+      );
+    }
+    sawNamed = true;
+  }
+  if (sawNumeric && sawNamed) {
+    throw new Error(
+      `${where} mixes numbered ({{1}}) and named ({{name}}) variables — use one style.`,
+    );
+  }
+}
+
+/**
  * Meta requires contiguous, 1-indexed variables. `{{1}} {{3}}` is
  * invalid — it must be `{{1}} {{2}}`.
  */
@@ -87,16 +182,32 @@ function assertContiguous(indices: number[], where: string): void {
   }
 }
 
-export function validateBody(bodyText: string): number[] {
+/**
+ * Returns the body's variable keys (canonical order). Positional keys
+ * must be contiguous; Meta also rejects bodies that start or end with
+ * a variable, so we catch that before the review round-trip.
+ */
+export function validateBody(bodyText: string): string[] {
   if (!bodyText.trim()) throw new Error('Body text is required.');
   if (bodyText.length > TEMPLATE_LIMITS.bodyMaxLength) {
     throw new Error(
       `Body text exceeds ${TEMPLATE_LIMITS.bodyMaxLength} chars (got ${bodyText.length}).`,
     );
   }
-  const indices = extractVariableIndices(bodyText);
-  assertContiguous(indices, 'Body');
-  return indices;
+  validateVariableTokens(bodyText, 'Body');
+  const keys = extractVariableKeys(bodyText);
+  if (detectParameterFormat(bodyText) === 'POSITIONAL') {
+    assertContiguous(keys.map(Number), 'Body');
+  }
+  if (keys.length > 0) {
+    const trimmed = bodyText.trim();
+    if (/^\{\{[^{}]*\}\}/.test(trimmed) || /\{\{[^{}]*\}\}$/.test(trimmed)) {
+      throw new Error(
+        'Body cannot start or end with a variable (Meta rule) — add text before/after it.',
+      );
+    }
+  }
+  return keys;
 }
 
 export function validateFooter(footerText: string | undefined): void {
@@ -106,8 +217,8 @@ export function validateFooter(footerText: string | undefined): void {
       `Footer text exceeds ${TEMPLATE_LIMITS.footerMaxLength} chars (got ${footerText.length}).`,
     );
   }
-  if (extractVariableIndices(footerText).length > 0) {
-    throw new Error('Footer text cannot contain {{N}} variables (Meta rule).');
+  if (rawPlaceholders(footerText).length > 0) {
+    throw new Error('Footer text cannot contain variables (Meta rule).');
   }
 }
 
@@ -134,16 +245,17 @@ export function validateHeader(
         `Header text exceeds ${TEMPLATE_LIMITS.headerTextMaxLength} chars (got ${header_content.length}).`,
       );
     }
-    const indices = extractVariableIndices(header_content);
-    if (indices.length > 1) {
+    validateVariableTokens(header_content, 'Header');
+    const keys = extractVariableKeys(header_content);
+    if (keys.length > 1) {
       throw new Error(
-        `Text header supports at most one variable — found ${indices.length} (Meta rule).`,
+        `Text header supports at most one variable — found ${keys.length} (Meta rule).`,
       );
     }
-    if (indices.length === 1 && indices[0] !== 1) {
+    if (keys.length === 1 && /^\d+$/.test(keys[0]) && keys[0] !== '1') {
       throw new Error('Text header variable must be {{1}} (Meta rule).');
     }
-    return { variableCount: indices.length };
+    return { variableCount: keys.length };
   }
 
   // image / video / document need either a public URL or a Resumable
@@ -164,6 +276,14 @@ export function validateHeader(
     }
   }
   return { variableCount: 0 };
+}
+
+/** Placeholder suffix for a dynamic URL button — Meta's only allowed form. */
+export const DYNAMIC_URL_SUFFIX = '{{1}}';
+
+/** True when the URL ends in `{{1}}` (a dynamic URL button). */
+export function isDynamicUrl(url: string): boolean {
+  return /\{\{\s*1\s*\}\}$/.test(url.trim());
 }
 
 function countButtonsByType(
@@ -240,16 +360,21 @@ export function validateButtons(buttons: TemplateButton[] | undefined): void {
         } catch {
           throw new Error(`URL button #${i + 1} has an invalid url.`);
         }
-        const urlVars = extractVariableIndices(b.url);
-        if (urlVars.length > 1) {
+        const tokens = rawPlaceholders(b.url);
+        if (tokens.length > 1) {
           throw new Error(
             `URL button #${i + 1} can have at most one variable (Meta rule).`,
           );
         }
-        if (urlVars.length === 1) {
-          if (urlVars[0] !== 1) {
+        if (tokens.length === 1) {
+          if (tokens[0] !== '1') {
             throw new Error(
-              `URL button #${i + 1} variable must be {{1}} (Meta rule).`,
+              `URL button #${i + 1}: {{${tokens[0]}}} isn't allowed — URL buttons only support a single {{1}} at the end (use a Dynamic URL).`,
+            );
+          }
+          if (!isDynamicUrl(b.url)) {
+            throw new Error(
+              `URL button #${i + 1}: {{1}} must be at the very end of the URL (Meta rule).`,
             );
           }
           if (!b.example?.trim()) {
@@ -329,6 +454,17 @@ export function validateTemplatePayload(payload: TemplatePayload): {
   const bodyVars = validateBody(payload.body_text);
   validateFooter(payload.footer_text);
   const headerResult = validateHeader(payload);
+  if (payload.header_type === 'text' && payload.header_content) {
+    const headerFormat = extractVariableKeys(payload.header_content).length
+      ? detectParameterFormat(payload.header_content)
+      : null;
+    const bodyFormat = bodyVars.length ? detectParameterFormat(payload.body_text) : null;
+    if (headerFormat && bodyFormat && headerFormat !== bodyFormat) {
+      throw new Error(
+        'Header and body must use the same variable style — all numbered ({{1}}) or all named ({{name}}).',
+      );
+    }
+  }
   validateButtons(payload.buttons);
   validateSampleValues(payload, bodyVars.length, headerResult.variableCount);
   return {

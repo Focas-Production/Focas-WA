@@ -8,6 +8,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Contact } from '@/types';
 import { selectAll } from '@/lib/supabase/select-all';
+import { compareVariableKeys } from './template-validators';
 
 /**
  * Variable mapping — each template placeholder (by key, usually "1",
@@ -21,6 +22,17 @@ export type VariableMapping =
   | { type: 'field'; value: string }
   | { type: 'custom_field'; value: string };
 
+/**
+ * Reserved mapping keys for values outside the body. The `__` prefix
+ * can't collide with a body key (named params must start with a
+ * letter) and is never in a template's body keys, so resolveVariables
+ * with `templateKeys` ignores them for the body.
+ */
+export const HEADER_VARIABLE_KEY = '__header';
+export function buttonVariableKey(buttonIndex: number): string {
+  return `__button_${buttonIndex}`;
+}
+
 /** contactId → (customFieldId → value). */
 export type CustomValueIndex = Map<string, Map<string, string>>;
 
@@ -33,18 +45,24 @@ export function resolveVariables(
   variables: Record<string, VariableMapping>,
   contact: Contact,
   customValues?: Map<string, string>,
+  /**
+   * The template's own variable keys (extractVariableKeys of its body).
+   * When given, only these are resolved — stale mappings left over from
+   * a previously picked template can't shift values out of position.
+   */
+  templateKeys?: string[],
 ): string[] {
-  // Keys are typically "1","2",... — numeric-aware sort keeps
-  // {{1}} before {{10}}.
-  const keys = Object.keys(variables).sort((a, b) => {
-    const an = Number(a);
-    const bn = Number(b);
-    if (Number.isFinite(an) && Number.isFinite(bn)) return an - bn;
-    return a.localeCompare(b);
-  });
+  // Keys are "1","2",… or named ("first_name"). Must sort exactly like
+  // extractVariableKeys so values line up with the send builder.
+  const keys =
+    templateKeys ??
+    Object.keys(variables)
+      .filter((k) => !k.startsWith('__'))
+      .sort(compareVariableKeys);
 
   return keys.map((key) => {
     const v = variables[key];
+    if (!v) return '';
     if (v.type === 'static') return v.value;
 
     if (v.type === 'field') {

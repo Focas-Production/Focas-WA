@@ -123,4 +123,40 @@ describe('buildMetaTemplatePayload', () => {
       'BUTTONS',
     ]);
   });
+
+  it('emits parameter_format NAMED with named examples', () => {
+    const payload = buildMetaTemplatePayload({
+      ...base,
+      header_type: 'text',
+      header_content: 'Hello {{name}}',
+      body_text: 'Hi {{name}}, order {{order_id}} shipped.',
+      sample_values: { header: ['John'], body: ['John', 'ORD-1'] },
+    });
+    expect(payload.parameter_format).toBe('NAMED');
+    expect(payload.components[0]).toEqual({
+      type: 'HEADER',
+      format: 'TEXT',
+      text: 'Hello {{name}}',
+      example: { header_text_named_params: [{ param_name: 'name', example: 'John' }] },
+    });
+    expect(payload.components[1]).toEqual({
+      type: 'BODY',
+      text: 'Hi {{name}}, order {{order_id}} shipped.',
+      example: {
+        body_text_named_params: [
+          { param_name: 'name', example: 'John' },
+          { param_name: 'order_id', example: 'ORD-1' },
+        ],
+      },
+    });
+  });
+
+  it('omits parameter_format for positional templates', () => {
+    const payload = buildMetaTemplatePayload({
+      ...base,
+      body_text: 'Hi {{1}}, thanks.',
+      sample_values: { body: ['John'] },
+    });
+    expect(payload).not.toHaveProperty('parameter_format');
+  });
 });

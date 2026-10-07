@@ -275,3 +275,30 @@ describe('buildSendComponents — end-to-end mix', () => {
     expect((components[2] as { index: string }).index).toBe('1');
   });
 });
+
+describe('buildSendComponents — named parameters', () => {
+  it('tags body and header values with parameter_name', () => {
+    const components = buildSendComponents(
+      row({
+        header_type: 'text',
+        header_content: 'Hi {{name}}',
+        body_text: 'Order {{order_id}} for {{name}} shipped.',
+      }),
+      // body values follow canonical key order: name, order_id
+      { body: ['John', 'ORD-1'], headerText: 'John' },
+    );
+    expect(components).toEqual([
+      {
+        type: 'header',
+        parameters: [{ type: 'text', text: 'John', parameter_name: 'name' }],
+      },
+      {
+        type: 'body',
+        parameters: [
+          { type: 'text', text: 'John', parameter_name: 'name' },
+          { type: 'text', text: 'ORD-1', parameter_name: 'order_id' },
+        ],
+      },
+    ]);
+  });
+});
