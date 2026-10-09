@@ -50,6 +50,7 @@ import {
   stampChargeReference,
   refundTemplateCharge,
   WalletError,
+  type WalletChargeSource,
 } from '@/lib/wallet/wallet';
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver';
 
@@ -92,6 +93,8 @@ export interface SendMessageParams {
   /** Structured payload for `messageType === 'interactive'`. */
   interactivePayload?: InteractiveMessagePayload | null;
   replyToMessageId?: string | null;
+  /** Wallet attribution for template sends (default: inbox). */
+  chargeSource?: WalletChargeSource;
 }
 
 export interface SendMessageResult {
@@ -205,6 +208,7 @@ export async function sendMessageToConversation(
     templateMessageParams,
     interactivePayload,
     replyToMessageId,
+    chargeSource = { source: 'inbox' },
   } = params;
 
   if (!conversationId) {
@@ -422,6 +426,10 @@ export async function sendMessageToConversation(
         category,
         pricePaise,
         description: `Template "${templateName}" to ${sanitizedPhone}`,
+        templateName,
+        source: chargeSource.source,
+        sourceRef: chargeSource.sourceRef ?? null,
+        createdBy: chargeSource.createdBy ?? null,
       });
     } catch (err) {
       if (err instanceof WalletError && err.code === 'insufficient_balance') {

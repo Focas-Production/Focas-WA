@@ -53,6 +53,8 @@ interface SendTemplateArgs {
   templateName: string
   language?: string
   params?: string[]
+  /** Attributes the wallet charge to this automation in usage reports. */
+  automationId?: string
 }
 
 export async function engineSendText(args: SendTextArgs): Promise<{ whatsapp_message_id: string }> {
@@ -188,6 +190,9 @@ async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: str
       pricePaise,
       description: `Template "${input.templateName}" to ${sanitized} (automation)`,
       createdBy: input.userId,
+      source: 'automation',
+      sourceRef: input.automationId ?? null,
+      templateName: input.templateName,
     })
   }
 

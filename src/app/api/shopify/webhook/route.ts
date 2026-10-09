@@ -136,6 +136,7 @@ export async function POST(request: Request) {
       templateName: mapping.template_name,
       templateLanguage: mapping.language || 'en_US',
       templateParams: fillTemplateParams(mapping.params, vars),
+      chargeSource: { source: 'shopify', sourceRef: topic },
     });
 
     console.log(

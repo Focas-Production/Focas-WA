@@ -21,12 +21,28 @@
 //     the settle set, so the two can never double-refund).
 //
 // Session (free-form) messages are never charged.
+//
+// Attribution (migration 045): every debit records its `source`
+// (inbox / api / shopify / automation / broadcast) and `source_ref`
+// (broadcast id, automation id, API key id, Shopify topic) so the
+// usage report can group spend by campaign. Refunds inherit both
+// from the debit they reverse.
 // ============================================================
 
 import { supabaseAdmin } from '@/lib/automations/admin-client'
 import { getMetaRatePaise } from './meta-rates'
 
 export type WalletChargeCategory = 'marketing' | 'utility' | 'authentication'
+
+/** Where a template charge came from — drives the usage report. */
+export type WalletSource = 'inbox' | 'api' | 'shopify' | 'automation' | 'broadcast'
+
+export interface WalletChargeSource {
+  source: WalletSource
+  /** Broadcast id / automation id / API key id / Shopify topic. */
+  sourceRef?: string | null
+  createdBy?: string | null
+}
 
 export class WalletError extends Error {
   readonly code: 'insufficient_balance' | 'wallet_error'
@@ -104,6 +120,9 @@ export async function chargeTemplateSend(params: {
   description: string
   quantity?: number
   createdBy?: string | null
+  source: WalletSource
+  sourceRef?: string | null
+  templateName: string
 }): Promise<void> {
   const { error } = await supabaseAdmin().rpc('wallet_charge', {
     p_account_id: params.accountId,
@@ -112,6 +131,10 @@ export async function chargeTemplateSend(params: {
     p_description: params.description,
     p_reference_id: params.reference,
     p_created_by: params.createdBy ?? null,
+    p_source: params.source,
+    p_source_ref: params.sourceRef ?? null,
+    p_template_name: params.templateName,
+    p_quantity: params.quantity ?? 1,
   })
   if (error) {
     if (isInsufficientFunds(error)) {
@@ -132,6 +155,14 @@ export async function refundWalletAmount(params: {
   amountPaise: number
   reference: string
   description: string
+  /** Messages this refund covers (default 1). */
+  quantity?: number
+  /** Attribution — only needed when the reference has no matching
+   *  debit to inherit from (per-message broadcast refunds). */
+  source?: WalletSource
+  sourceRef?: string | null
+  templateName?: string | null
+  templateCategory?: WalletChargeCategory | null
 }): Promise<boolean> {
   if (params.amountPaise <= 0) return true
   try {
@@ -143,6 +174,11 @@ export async function refundWalletAmount(params: {
       p_reference_id: params.reference,
       p_created_by: null,
       p_type: 'refund',
+      p_source: params.source ?? null,
+      p_source_ref: params.sourceRef ?? null,
+      p_template_name: params.templateName ?? null,
+      p_template_category: params.templateCategory ?? null,
+      p_quantity: params.quantity ?? 1,
     })
     if (error && !error.message.includes('duplicate')) {
       console.error('[wallet] refund failed:', error.message)
@@ -303,6 +339,7 @@ export async function settleBroadcastCharge(
       amountPaise: Math.min(pricePaise * unsent, debitPaise),
       reference: `broadcast:${broadcastId}`,
       description: `Refund: ${unsent} unsent in broadcast "${broadcast.name}"`,
+      quantity: unsent,
     })
   } catch (err) {
     console.error('[wallet] broadcast settle failed:', err)
@@ -333,16 +370,22 @@ export async function refundBroadcastMessage(
     const debitPaise = await getBroadcastDebitPaise(broadcast.account_id, broadcastId)
     if (debitPaise === null) return
 
-    const { pricePaise } = await getTemplateCharge(
+    const { category, pricePaise } = await getTemplateCharge(
       broadcast.account_id,
       broadcast.template_name,
       broadcast.template_language,
     )
+    // Keyed by wamid, which has no debit of its own to inherit
+    // attribution from — pass the campaign's explicitly.
     await refundWalletAmount({
       accountId: broadcast.account_id,
       amountPaise: Math.min(pricePaise, debitPaise),
       reference: wamid,
       description: `Refund (delivery failed): broadcast "${broadcast.name}"`,
+      source: 'broadcast',
+      sourceRef: broadcastId,
+      templateName: broadcast.template_name,
+      templateCategory: category,
     })
   } catch (err) {
     console.error('[wallet] broadcast message refund failed:', err)

@@ -25,8 +25,16 @@ import {
   Banknote,
   ShieldCheck,
   Download,
+  X,
 } from 'lucide-react';
 import { toCsv, downloadBlob } from '@/lib/csv';
+import {
+  WalletUsage,
+  periodRange,
+  periodSlug,
+  type Period,
+  type UsageDrill,
+} from './wallet-usage';
 import { toast } from 'sonner';
 import { useTranslations } from 'next-intl';
 
@@ -59,6 +67,22 @@ interface WalletTx {
   category: string;
   description: string | null;
   created_at: string;
+  source: string | null;
+  source_ref: string | null;
+  template_name: string | null;
+  template_category: string | null;
+  quantity: number | null;
+}
+
+const TX_COLUMNS =
+  'id, type, amount_paise, balance_after_paise, category, description, created_at, source, source_ref, template_name, template_category, quantity';
+
+/** The subset of the PostgREST filter builder the history filters use. */
+interface TxFilterable<T> {
+  eq(column: string, value: string): T;
+  is(column: string, value: null): T;
+  gte(column: string, value: string): T;
+  lt(column: string, value: string): T;
 }
 
 const TX_PAGE_SIZE = 25;
@@ -80,19 +104,6 @@ function formatRate(paise: number): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 4,
   }).format(paise / 100);
-}
-
-/**
- * Local-time month boundaries for a 'YYYY-MM' picker value — local,
- * not UTC, so the filter matches the dates the table displays
- * (toLocaleString) instead of being offset by the timezone.
- */
-function monthRange(month: string): { start: string; end: string } {
-  const [y, m] = month.split('-').map(Number);
-  return {
-    start: new Date(y, m - 1, 1).toISOString(),
-    end: new Date(y, m, 1).toISOString(),
-  };
 }
 
 let razorpayScriptPromise: Promise<void> | null = null;
@@ -136,9 +147,12 @@ export function WalletSettings() {
   const [transactions, setTransactions] = useState<WalletTx[]>([]);
   const [txLoading, setTxLoading] = useState(false);
   const [txFilter, setTxFilter] = useState<'all' | 'credit' | 'debit' | 'refund'>('all');
-  /** 'YYYY-MM' from the month picker; '' = all months. */
-  const [txMonth, setTxMonth] = useState('');
-  const [monthTotals, setMonthTotals] = useState<Record<WalletTx['type'], number> | null>(null);
+  /** Shared by the usage report and the history below it. */
+  const [period, setPeriod] = useState<Period>({ kind: 'this_month' });
+  /** Usage row the history is drilled down to, if any. */
+  const [drill, setDrill] = useState<UsageDrill | null>(null);
+  const [usageRefresh, setUsageRefresh] = useState(0);
+  const historyRef = useRef<HTMLDivElement>(null);
   const [exportBusy, setExportBusy] = useState(false);
   const [txHasMore, setTxHasMore] = useState(false);
   const txOffset = useRef(0);
@@ -162,16 +176,13 @@ export function WalletSettings() {
       try {
         const supabase = createClient();
         const from = reset ? 0 : txOffset.current;
-        let q = supabase
-          .from('wallet_transactions')
-          .select('id, type, amount_paise, balance_after_paise, category, description, created_at')
-          .order('created_at', { ascending: false })
-          .range(from, from + TX_PAGE_SIZE - 1);
-        if (txFilter !== 'all') q = q.eq('type', txFilter);
-        if (txMonth) {
-          const { start, end } = monthRange(txMonth);
-          q = q.gte('created_at', start).lt('created_at', end);
-        }
+        const q = applyTxFilters(
+          supabase
+            .from('wallet_transactions')
+            .select(TX_COLUMNS)
+            .order('created_at', { ascending: false })
+            .range(from, from + TX_PAGE_SIZE - 1),
+        );
         const { data, error } = await q;
         if (error) throw error;
         const rows = (data ?? []) as WalletTx[];
@@ -184,45 +195,56 @@ export function WalletSettings() {
         setTxLoading(false);
       }
     },
-    [txFilter, txMonth, t],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- applyTxFilters reads exactly these
+    [txFilter, period, drill, t],
   );
 
   /**
-   * Month totals (debit/credit/refund) for the selected month —
-   * summed over EVERY row in the month via paged fetches, not just
-   * the visible page, so the number matches the Meta invoice.
+   * Type chip + period (or the drill's own range) + drill filters.
+   * Shared by the paged history and the CSV export so both always
+   * show the same rows.
    */
-  const loadMonthTotals = useCallback(async () => {
-    if (!txMonth) {
-      setMonthTotals(null);
-      return;
-    }
-    try {
-      const supabase = createClient();
-      const { start, end } = monthRange(txMonth);
-      const totals: Record<WalletTx['type'], number> = { debit: 0, credit: 0, refund: 0 };
-      for (let from = 0; from < 20000; from += 1000) {
-        const { data, error } = await supabase
-          .from('wallet_transactions')
-          .select('type, amount_paise')
-          .gte('created_at', start)
-          .lt('created_at', end)
-          .range(from, from + 999);
-        if (error) throw error;
-        for (const r of data ?? []) {
-          totals[r.type as WalletTx['type']] += Number(r.amount_paise);
-        }
-        if (!data || data.length < 1000) break;
+  function applyTxFilters<T extends TxFilterable<T>>(q: T): T {
+    if (txFilter !== 'all') q = q.eq('type', txFilter);
+    const range =
+      drill?.start || drill?.end
+        ? { start: drill.start ?? null, end: drill.end ?? null }
+        : periodRange(period);
+    if (range.start) q = q.gte('created_at', range.start);
+    if (range.end) q = q.lt('created_at', range.end);
+    if (drill) {
+      if (drill.source) q = q.eq('source', drill.source);
+      if (drill.sourceRef !== undefined) {
+        q = drill.sourceRef === null ? q.is('source_ref', null) : q.eq('source_ref', drill.sourceRef);
       }
-      setMonthTotals(totals);
-    } catch {
-      setMonthTotals(null);
+      if (drill.templateName !== undefined) {
+        q =
+          drill.templateName === null
+            ? q.is('template_name', null)
+            : q.eq('template_name', drill.templateName);
+      }
+      if (drill.templateCategory !== undefined) {
+        q = drill.templateCategory
+          ? q.eq('template_category', drill.templateCategory)
+          : q.is('template_category', null);
+      }
     }
-  }, [txMonth]);
+    return q;
+  }
 
-  useEffect(() => {
-    loadMonthTotals();
-  }, [loadMonthTotals]);
+  function handleDrill(next: UsageDrill) {
+    setDrill(next);
+    historyRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function handlePeriodChange(next: Period) {
+    setPeriod(next);
+    setDrill(null);
+  }
+
+  function sourceLabel(source: string | null): string | null {
+    return source ? t(`usage.source.${source}` as 'usage.source.other') : null;
+  }
 
   /**
    * Full statement export for the current month/type filter —
@@ -233,33 +255,47 @@ export function WalletSettings() {
     setExportBusy(true);
     try {
       const supabase = createClient();
-      const rows: Omit<WalletTx, 'id'>[] = [];
-      for (let from = 0; from < 50000; from += 1000) {
-        let q = supabase
-          .from('wallet_transactions')
-          .select('type, amount_paise, balance_after_paise, category, description, created_at')
-          .order('created_at', { ascending: true })
-          .range(from, from + 999);
-        if (txFilter !== 'all') q = q.eq('type', txFilter);
-        if (txMonth) {
-          const { start, end } = monthRange(txMonth);
-          q = q.gte('created_at', start).lt('created_at', end);
-        }
+      const rows: WalletTx[] = [];
+      for (let from = 0; ; from += 1000) {
+        const q = applyTxFilters(
+          supabase
+            .from('wallet_transactions')
+            .select(TX_COLUMNS)
+            .order('created_at', { ascending: true })
+            .range(from, from + 999),
+        );
         const { data, error } = await q;
         if (error) throw error;
-        rows.push(...((data ?? []) as Omit<WalletTx, 'id'>[]));
+        rows.push(...((data ?? []) as WalletTx[]));
         if (!data || data.length < 1000) break;
       }
-      const header = ['Date', 'Type', 'Category', 'Description', 'Amount (INR)', 'Balance after (INR)'];
+      const header = [
+        'Date',
+        'Type',
+        'Category',
+        'Source',
+        'Source ref',
+        'Template',
+        'Template category',
+        'Messages',
+        'Description',
+        'Amount (INR)',
+        'Balance after (INR)',
+      ];
       const body = rows.map((tx) => [
         new Date(tx.created_at).toLocaleString('en-IN'),
         tx.type,
         tx.category,
+        tx.source ?? '',
+        tx.source_ref ?? '',
+        tx.template_name ?? '',
+        tx.template_category ?? '',
+        String(tx.quantity ?? ''),
         tx.description ?? '',
         ((tx.type === 'debit' ? -1 : 1) * (tx.amount_paise / 100)).toFixed(2),
         (tx.balance_after_paise / 100).toFixed(2),
       ]);
-      const suffix = [txMonth, txFilter !== 'all' ? txFilter : '']
+      const suffix = [periodSlug(period), drill ? 'filtered' : '', txFilter !== 'all' ? txFilter : '']
         .filter(Boolean)
         .join('-');
       downloadBlob(
@@ -285,6 +321,7 @@ export function WalletSettings() {
   const refreshAll = useCallback(() => {
     loadWallet();
     loadTransactions(true);
+    setUsageRefresh((n) => n + 1);
   }, [loadWallet, loadTransactions]);
 
   async function handleRazorpayTopup() {
@@ -609,8 +646,16 @@ export function WalletSettings() {
         </div>
       </div>
 
+      <WalletUsage
+        currency={currency}
+        period={period}
+        onPeriodChange={handlePeriodChange}
+        onDrill={handleDrill}
+        refreshKey={usageRefresh}
+      />
+
       {/* History */}
-      <div className="rounded-xl border border-border bg-card/50 p-5">
+      <div ref={historyRef} className="scroll-mt-4 rounded-xl border border-border bg-card/50 p-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="text-sm font-medium text-foreground">{t('history.title')}</p>
           <div className="flex flex-wrap items-center gap-1.5">
@@ -627,22 +672,6 @@ export function WalletSettings() {
                 {t(`history.filter.${f}`)}
               </button>
             ))}
-            <input
-              type="month"
-              value={txMonth}
-              max={new Date().toISOString().slice(0, 7)}
-              onChange={(e) => setTxMonth(e.target.value)}
-              aria-label={t('history.monthFilter')}
-              className="h-7 rounded-md border border-border bg-muted px-2 text-xs text-foreground [color-scheme:light] dark:[color-scheme:dark]"
-            />
-            {txMonth && (
-              <button
-                onClick={() => setTxMonth('')}
-                className="rounded-full border border-border bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground"
-              >
-                {t('history.allMonths')}
-              </button>
-            )}
             <Button
               variant="outline"
               size="sm"
@@ -660,36 +689,17 @@ export function WalletSettings() {
           </div>
         </div>
 
-        {/* Month totals — summed over the whole month, not the page */}
-        {txMonth && monthTotals && (
-          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <div className="rounded-lg border border-border bg-muted/50 px-3 py-2">
-              <p className="text-xs text-muted-foreground">{t('history.totalDebits')}</p>
-              <p className="mt-0.5 text-sm font-semibold text-red-400">
-                −{formatMoney(monthTotals.debit, currency)}
-              </p>
-            </div>
-            <div className="rounded-lg border border-border bg-muted/50 px-3 py-2">
-              <p className="text-xs text-muted-foreground">{t('history.totalCredits')}</p>
-              <p className="mt-0.5 text-sm font-semibold text-emerald-500">
-                +{formatMoney(monthTotals.credit, currency)}
-              </p>
-            </div>
-            <div className="rounded-lg border border-border bg-muted/50 px-3 py-2">
-              <p className="text-xs text-muted-foreground">{t('history.totalRefunds')}</p>
-              <p className="mt-0.5 text-sm font-semibold text-amber-500">
-                +{formatMoney(monthTotals.refund, currency)}
-              </p>
-            </div>
-            <div className="rounded-lg border border-border bg-muted/50 px-3 py-2">
-              <p className="text-xs text-muted-foreground">{t('history.net')}</p>
-              <p className="mt-0.5 text-sm font-semibold text-foreground">
-                {formatMoney(
-                  monthTotals.credit + monthTotals.refund - monthTotals.debit,
-                  currency,
-                )}
-              </p>
-            </div>
+        {drill && (
+          <div className="mt-3 flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">{t('history.showing')}</span>
+            <button
+              onClick={() => setDrill(null)}
+              className="flex max-w-full items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary"
+              title={t('history.clearFilter')}
+            >
+              <span className="truncate">{drill.label}</span>
+              <X className="h-3 w-3 shrink-0" />
+            </button>
           </div>
         )}
 
@@ -723,7 +733,15 @@ export function WalletSettings() {
                           </span>
                         </div>
                         <span className="ml-5 block text-[11px] text-muted-foreground">
-                          {tx.category}
+                          {[
+                            sourceLabel(tx.source),
+                            tx.type === 'credit' ? tx.category : tx.template_category,
+                            (tx.quantity ?? 0) > 1
+                              ? t('history.messagesCount', { count: tx.quantity ?? 0 })
+                              : null,
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')}
                         </span>
                       </td>
                       <td

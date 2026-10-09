@@ -11,8 +11,32 @@ and polish.
 
 ## [Unreleased]
 
-Server-side campaign engine — broadcasts no longer depend on the
-browser.
+### Wallet usage report
+
+> **Migration required:** apply `supabase/migrations/045_wallet_usage.sql`
+> **before** deploying this version. It adds attribution columns to
+> `wallet_transactions`, backfills existing rows, and replaces
+> `wallet_charge` / `wallet_credit` (new parameters are optional, so the
+> previous app version keeps working against it).
+
+- **Usage & spend** on Settings → Wallet: net spend, messages billed,
+  average cost per message, refunds and top-ups for a period (last 7/30
+  days, this/last month, any month, all time), grouped by **campaign**,
+  **template**, **source**, **category** or **day**. Click a row to
+  filter the transaction history to it.
+- Every template charge now records where it came from: inbox (and the
+  agent), public API (and the key), Shopify (and the order event),
+  automation, or broadcast. Refunds inherit this from the charge they
+  reverse. Sends made before the migration show as "Earlier sends".
+- Totals are computed in the database. Previously the page downloaded
+  every transaction of the month to add them up, and stopped counting
+  at 20,000 rows.
+- CSV export includes source, template, template category and message
+  count, and follows the selected period and row filter.
+
+### Server-side campaign engine
+
+Broadcasts no longer depend on the browser.
 
 > **Migration required:** apply `supabase/migrations/044_broadcast_engine.sql`
 > (adds `broadcasts.locked_until` and `broadcast_recipients.attempted_at`).

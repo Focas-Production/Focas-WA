@@ -340,6 +340,9 @@ export async function launchBroadcast(
         quantity: contacts.length,
         description: `Broadcast "${name}" — ${contacts.length} × Template "${input.templateName}"`,
         createdBy: ctx.userId,
+        source: 'broadcast',
+        sourceRef: broadcastId,
+        templateName: input.templateName,
       });
       charged = true;
     } catch (err) {

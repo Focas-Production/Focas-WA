@@ -1680,6 +1680,74 @@
         "authentication": "인증",
         "perMessage": "건당"
       },
+      "usage": {
+        "title": "사용량 및 지출",
+        "desc": "템플릿 메시지 비용을 원하는 기준으로 묶어 봅니다. 행을 클릭하면 아래에서 해당 거래를 볼 수 있습니다.",
+        "loadError": "사용량을 불러오지 못했습니다.",
+        "empty": "이 기간에는 템플릿 지출이 없습니다.",
+        "groupBy": "그룹 기준",
+        "drillHint": "이 거래 보기",
+        "ofSent": "{sent}건 중",
+        "period": {
+          "7d": "최근 7일",
+          "30d": "최근 30일",
+          "this_month": "이번 달",
+          "last_month": "지난달",
+          "all": "전체 기간",
+          "pickMonth": "월 선택"
+        },
+        "group": {
+          "campaign": "캠페인",
+          "template": "템플릿",
+          "source": "출처",
+          "category": "카테고리",
+          "day": "일별"
+        },
+        "col": {
+          "campaign": "캠페인",
+          "template": "템플릿",
+          "source": "출처",
+          "category": "카테고리",
+          "day": "날짜",
+          "messages": "메시지",
+          "charged": "청구",
+          "refunded": "환불",
+          "net": "순 지출",
+          "lastActivity": "최근 활동"
+        },
+        "tiles": {
+          "spent": "순 지출",
+          "spentHint": "{debit} 청구, 환불 제외",
+          "messages": "청구된 메시지",
+          "avgCost": "메시지당 평균 {cost}",
+          "refunded": "환불",
+          "refundedHint": "실패한 메시지 {count}건",
+          "added": "지갑 충전",
+          "addedHint": "충전 및 수동 크레딧"
+        },
+        "source": {
+          "inbox": "받은편지함",
+          "api": "API",
+          "shopify": "Shopify",
+          "automation": "자동화",
+          "broadcast": "브로드캐스트",
+          "topup": "충전",
+          "adjustment": "조정",
+          "other": "이전 (출처 미상)"
+        },
+        "names": {
+          "inbox": "받은편지함 — 상담원 발송",
+          "quickBulk": "빠른 대량 발송",
+          "deletedBroadcast": "삭제된 브로드캐스트",
+          "automations": "자동화",
+          "deletedAutomation": "삭제된 자동화",
+          "api": "API",
+          "deletedKey": "폐기/삭제된 API 키",
+          "unattributed": "이전 발송 (추적 전)",
+          "noTemplate": "(알 수 없는 템플릿)",
+          "unknown": "알 수 없음"
+        }
+      },
       "history": {
         "title": "거래 내역",
         "empty": "아직 거래가 없습니다. 템플릿 발송과 충전 내역이 여기에 표시됩니다.",
@@ -1695,15 +1763,12 @@
           "debit": "차감",
           "refund": "환불"
         },
-        "monthFilter": "월별 필터",
-        "allMonths": "전체 월",
         "export": "CSV 내보내기",
         "exported": "{count}건의 거래를 내보냈습니다.",
         "exportFailed": "내보내기 실패. 다시 시도하세요.",
-        "totalDebits": "차감 (사용)",
-        "totalCredits": "충전 (추가)",
-        "totalRefunds": "환불",
-        "net": "순 변동"
+        "showing": "필터:",
+        "clearFilter": "필터 해제",
+        "messagesCount": "메시지 {count}건"
       },
       "approver": {
         "title": "수동 크레딧 승인",

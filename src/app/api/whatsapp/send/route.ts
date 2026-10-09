@@ -184,6 +184,7 @@ export async function POST(request: Request) {
         templateMessageParams: template_message_params,
         interactivePayload: interactive_payload,
         replyToMessageId: reply_to_message_id,
+        chargeSource: { source: 'inbox', createdBy: user.id },
       })
 
       return NextResponse.json({

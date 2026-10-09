@@ -243,6 +243,10 @@ export async function POST(request: Request) {
           pricePaise,
           description: `Template "${template_name}" to ${sanitized}`,
           createdBy: user.id,
+          // Ad-hoc bulk send (no broadcasts row) — groups as one
+          // "Quick bulk send" line in the usage report.
+          source: 'broadcast',
+          templateName: template_name,
         })
       } catch (err) {
         if (err instanceof WalletError && err.code === 'insufficient_balance') {

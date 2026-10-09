@@ -727,6 +727,9 @@ async function deliver(broadcast: ClaimedBroadcast, resumed: boolean): Promise<v
           pricePaise,
           quantity: count ?? 0,
           description: `Broadcast "${broadcast.name}" — ${count ?? 0} × Template "${broadcast.template_name}"`,
+          source: 'broadcast',
+          sourceRef: broadcastId,
+          templateName: broadcast.template_name,
         })
       } catch (err) {
         stop = {

@@ -75,6 +75,9 @@ export async function POST(request: Request) {
       quantity,
       description: `Broadcast "${broadcast.name}" — ${quantity} × Template "${broadcast.template_name}"`,
       createdBy: caller.userId,
+      source: 'broadcast',
+      sourceRef: broadcastId,
+      templateName: broadcast.template_name,
     })
   } catch (err) {
     if (err instanceof WalletError && err.code === 'insufficient_balance') {

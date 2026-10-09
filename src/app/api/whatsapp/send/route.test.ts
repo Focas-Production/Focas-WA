@@ -166,6 +166,7 @@ vi.mock('@/lib/whatsapp/meta-api', () => ({
 }))
 
 import { POST } from './route'
+import { chargeTemplateSend } from '@/lib/wallet/wallet'
 
 function postContactTemplate(overrides: Record<string, unknown> = {}) {
   return POST(
@@ -232,6 +233,18 @@ describe('POST /api/whatsapp/send — contact_id template path', () => {
       content_type: 'template',
       template_name: 'order_update',
       sender_type: 'agent',
+    })
+  })
+
+  it('attributes the wallet charge to the inbox and the sending agent', async () => {
+    await postContactTemplate()
+
+    expect(chargeTemplateSend).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(chargeTemplateSend).mock.calls[0][0]).toMatchObject({
+      source: 'inbox',
+      sourceRef: null,
+      createdBy: 'user-1',
+      templateName: 'order_update',
     })
   })
 

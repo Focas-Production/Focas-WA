@@ -291,6 +291,9 @@ export async function deliverBroadcast(
       pricePaise,
       quantity: plan.planned.length,
       description: `Broadcast — ${plan.planned.length} × Template "${plan.templateName}"`,
+      source: 'broadcast',
+      sourceRef: plan.broadcastId,
+      templateName: plan.templateName,
     });
   } catch (error) {
     const message =

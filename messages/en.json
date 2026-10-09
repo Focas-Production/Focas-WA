@@ -1681,6 +1681,74 @@
         "authentication": "Authentication",
         "perMessage": "per message"
       },
+      "usage": {
+        "title": "Usage & spend",
+        "desc": "What your template messages cost, grouped the way you want. Click any row to see its transactions below.",
+        "loadError": "Failed to load usage.",
+        "empty": "No template spend in this period.",
+        "groupBy": "Group by",
+        "drillHint": "Show these transactions",
+        "ofSent": "of {sent} sent",
+        "period": {
+          "7d": "Last 7 days",
+          "30d": "Last 30 days",
+          "this_month": "This month",
+          "last_month": "Last month",
+          "all": "All time",
+          "pickMonth": "Pick a month"
+        },
+        "group": {
+          "campaign": "Campaign",
+          "template": "Template",
+          "source": "Source",
+          "category": "Category",
+          "day": "Day"
+        },
+        "col": {
+          "campaign": "Campaign",
+          "template": "Template",
+          "source": "Source",
+          "category": "Category",
+          "day": "Day",
+          "messages": "Messages",
+          "charged": "Charged",
+          "refunded": "Refunded",
+          "net": "Net spend",
+          "lastActivity": "Last activity"
+        },
+        "tiles": {
+          "spent": "Net spend",
+          "spentHint": "{debit} charged, minus refunds",
+          "messages": "Messages billed",
+          "avgCost": "Avg {cost} per message",
+          "refunded": "Refunded",
+          "refundedHint": "{count} failed messages",
+          "added": "Added to wallet",
+          "addedHint": "Top-ups and manual credits"
+        },
+        "source": {
+          "inbox": "Inbox",
+          "api": "API",
+          "shopify": "Shopify",
+          "automation": "Automation",
+          "broadcast": "Broadcast",
+          "topup": "Top-up",
+          "adjustment": "Adjustment",
+          "other": "Earlier (unattributed)"
+        },
+        "names": {
+          "inbox": "Inbox — agent sends",
+          "quickBulk": "Quick bulk send",
+          "deletedBroadcast": "Deleted broadcast",
+          "automations": "Automations",
+          "deletedAutomation": "Deleted automation",
+          "api": "API",
+          "deletedKey": "Revoked / deleted API key",
+          "unattributed": "Earlier sends (before tracking)",
+          "noTemplate": "(unknown template)",
+          "unknown": "Unknown"
+        }
+      },
       "history": {
         "title": "Transaction history",
         "empty": "No transactions yet. Template sends and top-ups will appear here.",
@@ -1696,15 +1764,12 @@
           "debit": "Debits",
           "refund": "Refunds"
         },
-        "monthFilter": "Filter by month",
-        "allMonths": "All months",
         "export": "Export CSV",
         "exported": "Exported {count} transactions.",
         "exportFailed": "Export failed. Try again.",
-        "totalDebits": "Debits (spent)",
-        "totalCredits": "Credits (added)",
-        "totalRefunds": "Refunds",
-        "net": "Net change"
+        "showing": "Showing:",
+        "clearFilter": "Clear filter",
+        "messagesCount": "{count} messages"
       },
       "approver": {
         "title": "Manual credit approval",
