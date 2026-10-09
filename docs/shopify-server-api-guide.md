@@ -124,7 +124,7 @@ Content-Type: application/json
 | `type`              | Yes      | Always `"template"` for template messages                                   |
 | `template.name`     | Yes      | Approved template name                                                      |
 | `template.language` | Yes      | Template language code (defaults to `en_US` if omitted, so always set it)   |
-| `template.params`   | If the template has variables | Body values in order: `params[0]` → `{{1}}`, `params[1]` → `{{2}}` |
+| `template.params`   | If the template has variables | Body values in order: `params[0]` → `{{1}}`, `params[1]` → `{{2}}`. For templates with named variables, use the object form in [Named variables](#named-variables) |
 | `name`              | No       | Contact name. Used only if this phone isn't in wacrm yet                    |
 
 You don't need to create the contact first. wacrm finds the contact by
@@ -166,6 +166,42 @@ curl -X POST https://wa.focasedu.online/api/v1/messages \
 Save `whatsapp_message_id` against the order if you want to track
 delivery later.
 
+### Named variables
+
+If the template uses named variables such as `{{name}}` and
+`{{calendar_link}}`, pass `params` as an object keyed by variable name.
+Key order doesn't matter:
+
+```json
+{
+  "to": "+919876543210",
+  "type": "template",
+  "name": "Ravi Kumar",
+  "template": {
+    "name": "live_class_removed",
+    "language": "en_US",
+    "params": {
+      "name": "Ravi",
+      "calendar_link": "https://app.focasedu.com/student/live-classes?view=calendar"
+    }
+  }
+}
+```
+
+- Every variable in the template needs a value, and every key must match a
+  variable name exactly. A missing or misspelled key returns
+  `400 invalid_template_params`, which lists the expected names. No message
+  is sent and your wallet isn't charged.
+- If the template has a **text** header with a named variable, include that
+  variable in the same object.
+- Values must be strings or numbers and can't be empty.
+- Positional templates (`{{1}}`, `{{2}}`) accept the same form with keys
+  `"1"`, `"2"`.
+
+Use this form for named templates. The array form fills named variables
+in **alphabetical** order of their names, not in the order they appear in
+the template, and breaks if a variable is added or renamed.
+
 ---
 
 ## Step 6: Templates with a header, buttons or media
@@ -192,13 +228,25 @@ enough. For anything else, pass `params` as an **object**:
 
 | Key              | Use it when                                                                                 |
 | ---------------- | ------------------------------------------------------------------------------------------- |
-| `body`           | The body has `{{1}}`, `{{2}}`, … (same as the array form)                                    |
+| `body`           | The body has variables. An array (same as the array form) or an object keyed by variable name, e.g. `{ "name": "Ravi" }` |
 | `headerText`     | The **text** header contains `{{1}}`                                                         |
 | `headerMediaUrl` | The header is an image, video or document and you want a different file per message (public HTTPS URL). Leave it out to use the file the template was approved with. |
 | `buttonParams`   | A **URL button** ends in `{{1}}`. The key is the button's position, starting at `"0"`; the value is the part of the URL that replaces `{{1}}`. |
 
 Quick-reply and phone-number buttons, and URL buttons without a variable,
 need nothing.
+
+With named variables, you can put `headerMediaUrl` and `buttonParams` next
+to the variable names instead of nesting them under `body`:
+
+```json
+"params": {
+  "name": "Ravi",
+  "order_id": "#1042",
+  "headerMediaUrl": "https://cdn.shopify.com/s/files/…/invoice.pdf",
+  "buttonParams": { "0": "orders/1042" }
+}
+```
 
 ---
 
@@ -380,6 +428,7 @@ the `broadcasts:send` scope). See [public-api.md](public-api.md#post-apiv1broadc
 | ------------------------------------------------- | --------------------------------------------------------------------- |
 | `201` returned but the customer got nothing       | Look at the message status in the wacrm Inbox. The number may not be on WhatsApp, or Meta may have rejected it after accepting. |
 | Message sent to the wrong country                 | The phone was sent without a country code. Use `toE164()` before sending. |
-| `meta_error` mentioning parameters                | The number of `params` doesn't match the template's `{{n}}` variables. |
+| `400 invalid_template_params`                     | A variable is missing, misspelled, empty, or not a string or number. The message names the variable and lists the expected ones. Nothing was sent or charged. |
+| `meta_error` mentioning parameters                | The template on Meta differs from the copy in wacrm. Run **Settings → Templates → Sync from Meta**. |
 | `meta_error` mentioning the template              | Wrong `template.name` or `template.language`, or the template isn't approved yet. |
 | Works with curl but not from the server           | The server isn't reading `.env`, or the key has extra spaces or newlines. |

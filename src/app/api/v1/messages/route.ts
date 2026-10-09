@@ -20,7 +20,9 @@
 //     "template": {                          // required when type=template
 //       "name": "order_update",
 //       "language": "en_US",
-//       "params": ["A123"] | { "body": [...] }   // array = positional body; object = structured
+//       "params": ["A123"]                   // positional body values, or
+//               | { "order_id": "A123" }     // named: keyed by template variable, or
+//               | { "body": [...] | {...}, "headerMediaUrl": "…", "buttonParams": { "0": "…" } }
 //     },
 //     "reply_to_message_id": "<uuid>",       // optional, must be in the same conversation
 //     "name": "Jane Doe"                     // optional, names a newly-created contact
@@ -60,22 +62,14 @@ export async function POST(request: Request) {
 
     const type = typeof body.type === 'string' ? body.type : 'text';
 
-    // Unpack the optional `template` object into the flat params the
-    // send core expects. `params` as an array → legacy positional body
-    // params; as an object → structured header/body/button params.
+    // `template.params` goes to the send core untouched — it accepts a
+    // positional array, a named map ({ "name": "Ravi" }) or a structured
+    // object, and validates each against the template definition.
     const template =
       body.template && typeof body.template === 'object'
         ? (body.template as Record<string, unknown>)
         : null;
-    const templateParams = Array.isArray(template?.params)
-      ? (template.params as unknown[]).filter(
-          (p): p is string => typeof p === 'string'
-        )
-      : undefined;
-    const templateMessageParams =
-      template?.params && !Array.isArray(template.params)
-        ? template.params
-        : undefined;
+    const templateMessageParams = template?.params;
 
     // Validate the message shape BEFORE resolveConversationByPhone
     // finds-or-creates a contact + conversation, so a bad payload 400s
@@ -117,7 +111,6 @@ export async function POST(request: Request) {
         templateName: typeof template?.name === 'string' ? template.name : null,
         templateLanguage:
           typeof template?.language === 'string' ? template.language : null,
-        templateParams,
         templateMessageParams,
         interactivePayload,
         replyToMessageId:

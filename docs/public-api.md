@@ -140,7 +140,8 @@ curl -X POST https://your-crm.example.com/api/v1/messages \
   "template": {
     "name": "order_update",
     "language": "en_US",
-    "params": ["A123"]        // positional body vars, or a structured object
+    "params": ["A123"]        // positional body vars, a named map ({ "order_id": "A123" }),
+                              // or a structured object ({ "body", "headerText", "headerMediaUrl", "buttonParams" })
   },
   "reply_to_message_id": "<uuid>"   // optional; must be in the same conversation
 }

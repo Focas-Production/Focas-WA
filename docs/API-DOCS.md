@@ -100,6 +100,16 @@ curl -X POST "$WACRM_BASE_URL/api/v1/messages" \
 
 `params` fills `{{1}}`, `{{2}}`… in the template body, in order.
 
+For templates with named variables (`{{name}}`, `{{calendar_link}}`), pass an
+object keyed by variable name instead. Key order doesn't matter:
+
+```json
+"params": { "name": "Ravi", "calendar_link": "https://app.focasedu.com/…" }
+```
+
+A missing, unknown or empty variable returns `400 invalid_template_params`
+with the expected names. Nothing is sent or charged.
+
 > ⚠️ **Do not send OTP/authentication templates through this API.**
 > They require the code in both the body and a copy-code button, and
 > wacrm's template sync drops OTP buttons — Meta rejects the send.

@@ -1,6 +1,22 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
+const walletMocks = vi.hoisted(() => ({
+  getTemplateCharge: vi.fn(),
+  chargeTemplateSend: vi.fn(),
+}));
+vi.mock('@/lib/wallet/wallet', () => ({
+  ...walletMocks,
+  stampChargeReference: vi.fn(),
+  refundTemplateCharge: vi.fn(),
+  WalletError: class extends Error {},
+}));
+vi.mock('@/lib/whatsapp/encryption', () => ({
+  decrypt: (v: string) => v,
+  encrypt: (v: string) => v,
+  isLegacyFormat: () => false,
+}));
+
 import {
   sendMessageToConversation,
   SendMessageError,
@@ -146,6 +162,66 @@ describe('sendMessageToConversation — param validation (pre-DB)', () => {
       })
     ).rejects.toThrow('reached DB');
     expect(spy).toHaveBeenCalledWith('conversations');
+  });
+});
+
+// Minimal chainable Supabase stub: every query resolves to the row
+// registered for its table.
+function fakeDb(rows: Record<string, unknown>): SupabaseClient {
+  return {
+    from(table: string) {
+      const result = { data: rows[table] ?? null, error: null };
+      const chain: Record<string, unknown> = {};
+      for (const m of ['select', 'eq', 'update', 'insert']) {
+        chain[m] = () => chain;
+      }
+      chain.single = async () => result;
+      chain.maybeSingle = async () => result;
+      return chain;
+    },
+  } as unknown as SupabaseClient;
+}
+
+describe('sendMessageToConversation — template params (pre-charge)', () => {
+  const db = () =>
+    fakeDb({
+      conversations: { id: 'cv-1', contact: { id: 'ct-1', phone: '+917305504500' } },
+      whatsapp_config: { id: 'cfg-1', phone_number_id: 'pn-1', access_token: 'tok' },
+      message_templates: {
+        id: 'tpl-1',
+        user_id: 'u-1',
+        name: 'live_class_removed',
+        category: 'Utility',
+        language: 'en_US',
+        body_text: 'Hi {{name}}, calendar: {{calendar_link}}',
+        created_at: '2026-01-01T00:00:00Z',
+      },
+    });
+
+  it('rejects an unknown named variable with 400 before charging the wallet', async () => {
+    const err = await sendMessageToConversation(db(), 'acct-1', {
+      conversationId: 'cv-1',
+      messageType: 'template',
+      templateName: 'live_class_removed',
+      templateMessageParams: { name: 'Ravi', calender_link: 'https://x' },
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(SendMessageError);
+    expect(err.code).toBe('invalid_template_params');
+    expect(err.status).toBe(400);
+    expect(err.message).toMatch(/"calender_link"/);
+    expect(walletMocks.chargeTemplateSend).not.toHaveBeenCalled();
+  });
+
+  it('rejects an empty named body map with 400 before charging', async () => {
+    const err = await sendMessageToConversation(db(), 'acct-1', {
+      conversationId: 'cv-1',
+      messageType: 'template',
+      templateName: 'live_class_removed',
+      templateMessageParams: { body: {} },
+    }).catch((e) => e);
+    expect(err.status).toBe(400);
+    expect(err.message).toMatch(/Missing value/);
+    expect(walletMocks.chargeTemplateSend).not.toHaveBeenCalled();
   });
 });
 

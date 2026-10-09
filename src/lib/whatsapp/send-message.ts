@@ -45,6 +45,11 @@ import {
 import type { MessageTemplate } from '@/types';
 import { isMessageTemplate } from '@/lib/whatsapp/template-row-guard';
 import {
+  buildSendComponents,
+  type SendTimeParams,
+} from '@/lib/whatsapp/template-send-builder';
+import { resolveTemplateSendParams } from '@/lib/whatsapp/template-send-params';
+import {
   getTemplateCharge,
   chargeTemplateSend,
   stampChargeReference,
@@ -88,7 +93,10 @@ export interface SendMessageParams {
   templateLanguage?: string | null;
   /** Legacy positional body params (only used if messageParams.body unset). */
   templateParams?: string[];
-  /** Structured template params (header/body/buttons). */
+  /**
+   * Template values as sent by the caller: positional array, named map
+   * or structured object — see `resolveTemplateSendParams`.
+   */
   templateMessageParams?: unknown;
   /** Structured payload for `messageType === 'interactive'`. */
   interactivePayload?: InteractiveMessagePayload | null;
@@ -341,6 +349,27 @@ export async function sendMessageToConversation(
     templateRow = data ?? null;
   }
 
+  // Resolve + dry-run the template values BEFORE the wallet debit, so a
+  // bad payload (unknown variable, missing value, missing button param)
+  // is a 400 naming the field — not a charge/refund and a 502 from Meta.
+  let templateSendParams: SendTimeParams = {};
+  if (messageType === 'template') {
+    try {
+      templateSendParams = resolveTemplateSendParams(
+        templateRow,
+        templateMessageParams,
+        templateParams
+      );
+      if (templateRow) buildSendComponents(templateRow, templateSendParams);
+    } catch (err) {
+      throw new SendMessageError(
+        'invalid_template_params',
+        err instanceof Error ? err.message : 'Invalid template params',
+        400
+      );
+    }
+  }
+
   const attempt = async (phone: string): Promise<string> => {
     if (messageType === 'template') {
       const result = await sendTemplateMessage({
@@ -350,8 +379,9 @@ export async function sendMessageToConversation(
         templateName: templateName!,
         language: templateLanguage || 'en_US',
         template: templateRow ?? undefined,
-        messageParams: templateMessageParams ?? undefined,
-        params: templateParams || [],
+        messageParams: templateSendParams,
+        // Used when the template row isn't synced locally (body only).
+        params: templateSendParams.body ?? [],
         contextMessageId,
       });
       return result.messageId;
