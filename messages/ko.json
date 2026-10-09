@@ -218,7 +218,8 @@
       "interactiveReply": "[인터랙티브 응답]",
       "unsupported": "[지원되지 않는 메시지 형식]",
       "aiBadge": "AI",
-      "aiBadgeTitle": "AI 어시스턴트가 자동으로 전송함"
+      "aiBadgeTitle": "AI 어시스턴트가 자동으로 전송함",
+      "failedNoReason": "전송 실패 — 기록된 사유 없음"
     },
     "actions": {
       "reply": "답장",

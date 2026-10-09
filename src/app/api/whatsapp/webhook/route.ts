@@ -465,9 +465,16 @@ async function handleStatusUpdate(status: {
   //    `.select()`: message_id is NOT unique (migration 009 — Meta ids
   //    repeat across numbers), so this updates 0..N rows and must not
   //    assume a single row.
+  //    A `failed` status also stores Meta's reason (migration 046) so
+  //    the inbox can show why, not just a red icon.
+  const msgUpdate: Record<string, unknown> = { status: status.status }
+  if (status.status === 'failed') {
+    msgUpdate.error_message =
+      statusErrorText(status.errors) ?? 'Delivery failed (no reason given by Meta)'
+  }
   const { error: msgErr } = await supabaseAdmin()
     .from('messages')
-    .update({ status: status.status })
+    .update(msgUpdate)
     .eq('message_id', status.id)
 
   if (msgErr) {

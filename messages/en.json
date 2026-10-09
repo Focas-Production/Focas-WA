@@ -218,7 +218,8 @@
       "interactiveReply": "[Interactive reply]",
       "unsupported": "[Unsupported message type]",
       "aiBadge": "AI",
-      "aiBadgeTitle": "Sent automatically by the AI assistant"
+      "aiBadgeTitle": "Sent automatically by the AI assistant",
+      "failedNoReason": "Not delivered — no reason recorded"
     },
     "actions": {
       "reply": "Reply",

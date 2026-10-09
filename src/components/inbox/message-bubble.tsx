@@ -361,6 +361,19 @@ export function MessageBubble({
           {isAgent && <StatusIcon status={message.status} />}
         </div>
       </div>
+      {/* Failure reason under the bubble — Meta's code + text from the
+          status webhook, or the send error for an optimistic bubble. */}
+      {isAgent && message.status === "failed" && (
+        <p
+          role="alert"
+          className="mt-1 flex max-w-xs items-start gap-1 text-right text-[11px] leading-snug text-red-400"
+        >
+          <XCircle className="mt-px h-3 w-3 shrink-0" />
+          <span className="break-words">
+            {message.error_message || t("failedNoReason")}
+          </span>
+        </p>
+      )}
       {reactions && reactions.length > 0 && onToggleReaction && (
         <MessageReactions
           reactions={reactions}

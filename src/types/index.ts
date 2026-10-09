@@ -229,6 +229,12 @@ export interface Message {
   template_name?: string;
   message_id?: string;
   status: MessageStatus;
+  /**
+   * Why the message failed — Meta's reason from the status webhook
+   * (e.g. "131026 Message undeliverable"), or the send error for an
+   * optimistic bubble. Only set when `status === 'failed'`. Migration 046.
+   */
+  error_message?: string | null;
   created_at: string;
   reply_to_message_id?: string;
   /**
