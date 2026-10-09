@@ -11,6 +11,20 @@ vi.mock('@/lib/wallet/wallet', () => ({
   refundTemplateCharge: vi.fn(),
   WalletError: class extends Error {},
 }));
+const metaMocks = vi.hoisted(() => ({
+  sendTemplateMessage: vi.fn(async () => ({ messageId: 'wamid.1' })),
+}));
+vi.mock('@/lib/whatsapp/meta-api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/whatsapp/meta-api')>()),
+  ...metaMocks,
+}));
+vi.mock('@/lib/webhooks/deliver', () => ({ dispatchWebhookEvent: vi.fn() }));
+vi.mock('@/lib/flows/admin-client', () => {
+  const chain: Record<string, unknown> = {};
+  for (const m of ['from', 'update', 'eq']) chain[m] = () => chain;
+  chain.then = (resolve: (v: unknown) => void) => resolve({ error: null });
+  return { supabaseAdmin: () => chain };
+});
 vi.mock('@/lib/whatsapp/encryption', () => ({
   decrypt: (v: string) => v,
   encrypt: (v: string) => v,
@@ -167,13 +181,20 @@ describe('sendMessageToConversation — param validation (pre-DB)', () => {
 
 // Minimal chainable Supabase stub: every query resolves to the row
 // registered for its table.
-function fakeDb(rows: Record<string, unknown>): SupabaseClient {
+function fakeDb(
+  rows: Record<string, unknown>,
+  writes: Array<{ table: string; op: string; value: unknown }> = []
+): SupabaseClient {
   return {
     from(table: string) {
       const result = { data: rows[table] ?? null, error: null };
       const chain: Record<string, unknown> = {};
-      for (const m of ['select', 'eq', 'update', 'insert']) {
-        chain[m] = () => chain;
+      for (const m of ['select', 'eq']) chain[m] = () => chain;
+      for (const m of ['update', 'insert']) {
+        chain[m] = (value: unknown) => {
+          writes.push({ table, op: m, value });
+          return chain;
+        };
       }
       chain.single = async () => result;
       chain.maybeSingle = async () => result;
@@ -183,7 +204,7 @@ function fakeDb(rows: Record<string, unknown>): SupabaseClient {
 }
 
 describe('sendMessageToConversation — template params (pre-charge)', () => {
-  const db = () =>
+  const db = (writes?: Array<{ table: string; op: string; value: unknown }>) =>
     fakeDb({
       conversations: { id: 'cv-1', contact: { id: 'ct-1', phone: '+917305504500' } },
       whatsapp_config: { id: 'cfg-1', phone_number_id: 'pn-1', access_token: 'tok' },
@@ -196,7 +217,8 @@ describe('sendMessageToConversation — template params (pre-charge)', () => {
         body_text: 'Hi {{name}}, calendar: {{calendar_link}}',
         created_at: '2026-01-01T00:00:00Z',
       },
-    });
+      messages: { id: 'msg-1' },
+    }, writes);
 
   it('rejects an unknown named variable with 400 before charging the wallet', async () => {
     const err = await sendMessageToConversation(db(), 'acct-1', {
@@ -222,6 +244,49 @@ describe('sendMessageToConversation — template params (pre-charge)', () => {
     expect(err.status).toBe(400);
     expect(err.message).toMatch(/Missing value/);
     expect(walletMocks.chargeTemplateSend).not.toHaveBeenCalled();
+  });
+});
+
+describe('sendMessageToConversation — inbox copy of API template sends', () => {
+  it('stores the rendered template body when no content_text is given', async () => {
+    walletMocks.getTemplateCharge.mockResolvedValue({ category: 'utility', pricePaise: 0 });
+    const writes: Array<{ table: string; op: string; value: unknown }> = [];
+    const db = fakeDb(
+      {
+        conversations: { id: 'cv-1', contact: { id: 'ct-1', phone: '+917305504500' } },
+        whatsapp_config: { id: 'cfg-1', phone_number_id: 'pn-1', access_token: 'tok' },
+        message_templates: {
+          id: 'tpl-1',
+          user_id: 'u-1',
+          name: 'live_class_removed',
+          category: 'Utility',
+          language: 'en_US',
+          body_text: 'Hi {{name}}, calendar: {{calendar_link}}',
+          created_at: '2026-01-01T00:00:00Z',
+        },
+        messages: { id: 'msg-1' },
+      },
+      writes
+    );
+
+    const result = await sendMessageToConversation(db, 'acct-1', {
+      conversationId: 'cv-1',
+      messageType: 'template',
+      templateName: 'live_class_removed',
+      templateMessageParams: { name: 'Ravi', calendar_link: 'https://x' },
+    });
+
+    expect(result).toEqual({ messageId: 'msg-1', whatsappMessageId: 'wamid.1' });
+    const insert = writes.find((w) => w.table === 'messages' && w.op === 'insert');
+    expect(insert?.value).toMatchObject({
+      content_type: 'template',
+      content_text: 'Hi Ravi, calendar: https://x',
+      template_name: 'live_class_removed',
+    });
+    const convUpdate = writes.find((w) => w.table === 'conversations' && w.op === 'update');
+    expect(convUpdate?.value).toMatchObject({
+      last_message_text: 'Hi Ravi, calendar: https://x',
+    });
   });
 });
 

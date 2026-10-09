@@ -49,6 +49,7 @@ import {
   type SendTimeParams,
 } from '@/lib/whatsapp/template-send-builder';
 import { resolveTemplateSendParams } from '@/lib/whatsapp/template-send-params';
+import { renderTemplateBody } from '@/lib/whatsapp/template-render';
 import {
   getTemplateCharge,
   chargeTemplateSend,
@@ -530,6 +531,15 @@ export async function sendMessageToConversation(
   // payload so the thread can re-render the buttons / rows.
   const interactiveBody =
     messageType === 'interactive' ? interactivePayload!.body : null;
+  // API / webhook callers don't send the rendered text (the dashboard
+  // does) — fill the template body so the inbox shows what was sent.
+  const templateBody =
+    messageType === 'template' && !contentText
+      ? templateRow
+        ? renderTemplateBody(templateRow.body_text, templateSendParams.body ?? [])
+        : `[template:${templateName}]`
+      : null;
+  const storedText = interactiveBody ?? templateBody ?? contentText ?? null;
 
   const { data: messageRecord, error: msgError } = await db
     .from('messages')
@@ -537,7 +547,7 @@ export async function sendMessageToConversation(
       conversation_id: conversationId,
       sender_type: 'agent',
       content_type: messageType,
-      content_text: interactiveBody ?? contentText ?? null,
+      content_text: storedText,
       media_url: mediaUrl || null,
       template_name: templateName || null,
       interactive_payload:
@@ -561,7 +571,7 @@ export async function sendMessageToConversation(
   const lastMessageText =
     messageType === 'interactive'
       ? interactivePayloadPreviewText(interactivePayload!)
-      : contentText || `[${messageType}]`;
+      : storedText || `[${messageType}]`;
 
   await db
     .from('conversations')
@@ -592,7 +602,7 @@ export async function sendMessageToConversation(
       message_id: messageRecord.id,
       whatsapp_message_id: waMessageId,
       content_type: messageType,
-      text: interactiveBody ?? contentText ?? null,
+      text: storedText,
       phone: workingPhone,
       sender_type: 'agent',
     });
