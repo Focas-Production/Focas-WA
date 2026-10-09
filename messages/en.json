@@ -145,6 +145,8 @@
       "unknown": "Unknown"
     },
     "messageThread": {
+      "loadOlder": "Load older messages",
+      "loadingOlder": "Loading…",
       "backToConversations": "Back to conversations",
       "hideContactPanel": "Hide contact panel",
       "showContactPanel": "Show contact panel",

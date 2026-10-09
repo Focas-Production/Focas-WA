@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import type { Message, MessageReaction } from "@/types";
 import {
@@ -64,37 +64,39 @@ function MediaImage({ url, alt }: { url: string; alt: string }) {
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
 
-  const loadImage = useCallback(async () => {
+  useEffect(() => {
     if (!url) return;
 
-    // Proxy URLs need auth fetch to create blob URL
-    if (url.startsWith("/api/whatsapp/media/")) {
+    // Plain URLs render directly; proxy URLs are fetched (same-origin,
+    // cookie-authenticated) into a blob URL owned by this effect run.
+    if (!url.startsWith("/api/whatsapp/media/")) {
+      setSrc(url);
+      setLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    let blobUrl: string | null = null;
+    (async () => {
       try {
         const res = await fetch(url);
         if (!res.ok) throw new Error("Failed to load media");
         const blob = await res.blob();
-        const blobUrl = URL.createObjectURL(blob);
+        if (cancelled) return;
+        blobUrl = URL.createObjectURL(blob);
         setSrc(blobUrl);
       } catch {
-        setError(true);
+        if (!cancelled) setError(true);
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
-    } else {
-      setSrc(url);
-      setLoading(false);
-    }
-  }, [url]);
+    })();
 
-  useEffect(() => {
-    loadImage();
     return () => {
-      if (src?.startsWith("blob:")) {
-        URL.revokeObjectURL(src);
-      }
+      cancelled = true;
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadImage]);
+  }, [url]);
 
   if (error) {
     return (

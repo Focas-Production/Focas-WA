@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
 import { decrypt } from '@/lib/whatsapp/encryption'
+import { parseRange } from '@/lib/whatsapp/media-range'
 
 export async function GET(
   request: Request,
@@ -73,12 +74,38 @@ export async function GET(
       accessToken,
     })
 
-    return new Response(new Uint8Array(buffer), {
+    const bytes = new Uint8Array(buffer)
+    const headers: Record<string, string> = {
+      'Content-Type': contentType || mediaInfo.mimeType || 'application/octet-stream',
+      // Private: the bytes are only reachable with this account's session.
+      'Cache-Control': 'private, max-age=86400',
+      'Accept-Ranges': 'bytes',
+    }
+
+    // <audio>/<video> send Range requests to seek; answer them with 206
+    // so scrubbing and duration work instead of a non-seekable stream.
+    const range = parseRange(request.headers.get('range'), bytes.length)
+    if (range === 'unsatisfiable') {
+      return new Response(null, {
+        status: 416,
+        headers: { ...headers, 'Content-Range': `bytes */${bytes.length}` },
+      })
+    }
+    if (range) {
+      const { start, end } = range
+      return new Response(bytes.subarray(start, end + 1), {
+        status: 206,
+        headers: {
+          ...headers,
+          'Content-Range': `bytes ${start}-${end}/${bytes.length}`,
+          'Content-Length': String(end - start + 1),
+        },
+      })
+    }
+
+    return new Response(bytes, {
       status: 200,
-      headers: {
-        'Content-Type': contentType || mediaInfo.mimeType || 'application/octet-stream',
-        'Cache-Control': 'public, max-age=86400',
-      },
+      headers: { ...headers, 'Content-Length': String(bytes.length) },
     })
   } catch (error) {
     console.error('Error in WhatsApp media GET:', error)

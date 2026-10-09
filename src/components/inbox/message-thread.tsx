@@ -129,6 +129,9 @@ function groupMessagesByDate(messages: Message[]) {
   return groups;
 }
 
+/** Messages fetched per page when opening a thread / loading older. */
+const MESSAGE_PAGE_SIZE = 50;
+
 const STATUS_OPTIONS: { label: string; value: ConversationStatus; color: string }[] = [
   { label: "Open", value: "open", color: "text-primary" },
   { label: "Pending", value: "pending", color: "text-amber-400" },
@@ -169,6 +172,16 @@ export function MessageThread({
   const { user } = useAuth();
   const { getPresence, getRow, now } = usePresence();
   const [loading, setLoading] = useState(false);
+  const [hasOlder, setHasOlder] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  // Latest customer message time from the DB, so the 24h window stays
+  // right even when that message is outside the loaded page.
+  const [lastCustomerAtFromDb, setLastCustomerAtFromDb] = useState<
+    string | null
+  >(null);
+  // Set just before older messages are prepended so the auto-scroll
+  // effect keeps the viewport anchored instead of jumping to the bottom.
+  const prependScrollHeightRef = useRef<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [templateModalOpen, setTemplateModalOpen] = useState(false);
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -224,14 +237,20 @@ export function MessageThread({
   const sessionInfo = useMemo(() => {
     if (!messages.length) return { expired: false, remaining: "" };
 
-    // Find last customer message
-    const lastCustomerMsg = [...messages]
+    // Last customer message: newest of the loaded page (covers realtime
+    // arrivals) and the DB lookup (covers messages outside the page).
+    const loadedLast = [...messages]
       .reverse()
-      .find((m) => m.sender_type === "customer");
+      .find((m) => m.sender_type === "customer")?.created_at;
+    const lastCustomerAt =
+      [loadedLast, lastCustomerAtFromDb]
+        .filter((d): d is string => !!d)
+        .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0] ??
+      null;
 
-    if (!lastCustomerMsg) return { expired: true, remaining: "No customer messages" };
+    if (!lastCustomerAt) return { expired: true, remaining: "No customer messages" };
 
-    const hoursSince = differenceInHours(new Date(), new Date(lastCustomerMsg.created_at));
+    const hoursSince = differenceInHours(new Date(), new Date(lastCustomerAt));
     const expired = hoursSince >= 24;
 
     if (expired) {
@@ -245,7 +264,7 @@ export function MessageThread({
         : tTimer("xmRemaining", { minutes: Math.floor(hoursLeft * 60) });
 
     return { expired, remaining };
-  }, [messages, tTimer]);
+  }, [messages, lastCustomerAtFromDb, tTimer]);
 
   // Store latest callback in a ref so fetchMessages doesn't need to
   // depend on `onMessagesLoaded` — otherwise parent re-renders cause
@@ -275,18 +294,41 @@ export function MessageThread({
     (async () => {
       setLoading(true);
 
+      // Newest page only — loading a whole thread both blew past
+      // PostgREST's 1000-row cap (oldest-first, so the newest messages
+      // were cut off) and wasted DB egress. Older pages load on demand.
       const { data, error } = await supabase
         .from("messages")
         .select("*")
         .eq("conversation_id", conversationId)
-        .order("created_at", { ascending: true });
+        .order("created_at", { ascending: false })
+        .limit(MESSAGE_PAGE_SIZE);
 
       if (cancelled) return;
 
       if (error) {
         console.error("Failed to fetch messages:", error);
       } else {
-        onMessagesLoadedRef.current(data ?? []);
+        const page = data ?? [];
+        // Only query separately when the page has no customer message —
+        // otherwise the page already holds the latest one.
+        let lastCustomerAt =
+          page.find((m) => m.sender_type === "customer")?.created_at ?? null;
+        if (!lastCustomerAt && page.length === MESSAGE_PAGE_SIZE) {
+          const { data: last } = await supabase
+            .from("messages")
+            .select("created_at")
+            .eq("conversation_id", conversationId)
+            .eq("sender_type", "customer")
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          if (cancelled) return;
+          lastCustomerAt = last?.created_at ?? null;
+        }
+        setLastCustomerAtFromDb(lastCustomerAt);
+        setHasOlder(page.length === MESSAGE_PAGE_SIZE);
+        onMessagesLoadedRef.current(page.reverse());
       }
 
       if (!cancelled) setLoading(false);
@@ -431,13 +473,44 @@ export function MessageThread({
       });
   }, [conversationId, hasUnread]);
 
-  // Auto-scroll to bottom on new messages
+  // Auto-scroll to bottom on new messages; after prepending an older
+  // page, keep the previously-visible message in place instead.
   useEffect(() => {
     if (scrollRef.current) {
       const el = scrollRef.current;
-      el.scrollTop = el.scrollHeight;
+      const prevHeight = prependScrollHeightRef.current;
+      prependScrollHeightRef.current = null;
+      el.scrollTop =
+        prevHeight !== null ? el.scrollHeight - prevHeight : el.scrollHeight;
     }
   }, [messages]);
+
+  const loadOlderMessages = useCallback(async () => {
+    const oldest = messages.find((m) => !m.id.startsWith("temp-"));
+    if (!conversationId || !oldest || loadingOlder) return;
+    setLoadingOlder(true);
+    const { data, error } = await createClient()
+      .from("messages")
+      .select("*")
+      .eq("conversation_id", conversationId)
+      .lt("created_at", oldest.created_at)
+      .order("created_at", { ascending: false })
+      .limit(MESSAGE_PAGE_SIZE);
+    setLoadingOlder(false);
+    if (error) {
+      console.error("Failed to fetch older messages:", error);
+      return;
+    }
+    const page = (data ?? []).reverse();
+    setHasOlder(page.length === MESSAGE_PAGE_SIZE);
+    if (page.length === 0) return;
+    const known = new Set(messages.map((m) => m.id));
+    prependScrollHeightRef.current = scrollRef.current?.scrollHeight ?? null;
+    onMessagesLoadedRef.current([
+      ...page.filter((m) => !known.has(m.id)),
+      ...messages,
+    ]);
+  }, [conversationId, messages, loadingOlder]);
 
   const handleSend = useCallback(
     async (text: string, replyToId?: string) => {
@@ -1066,6 +1139,18 @@ export function MessageThread({
           </div>
         ) : (
           <div className="space-y-4">
+            {hasOlder && (
+              <div className="flex justify-center">
+                <button
+                  type="button"
+                  onClick={loadOlderMessages}
+                  disabled={loadingOlder}
+                  className="rounded-full bg-muted px-3 py-1 text-xs text-muted-foreground hover:text-foreground disabled:opacity-60"
+                >
+                  {loadingOlder ? t("loadingOlder") : t("loadOlder")}
+                </button>
+              </div>
+            )}
             {messageGroups.map((group) => (
               <div key={group.date}>
                 {/* Date separator */}

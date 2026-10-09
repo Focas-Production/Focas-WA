@@ -145,6 +145,8 @@
       "unknown": "알 수 없음"
     },
     "messageThread": {
+      "loadOlder": "이전 메시지 불러오기",
+      "loadingOlder": "불러오는 중…",
       "backToConversations": "대화 목록으로 돌아가기",
       "hideContactPanel": "연락처 패널 숨기기",
       "showContactPanel": "연락처 패널 표시",
