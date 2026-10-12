@@ -15,6 +15,7 @@ import {
   CornerDownLeft,
   Sparkles,
   Download,
+  Ban,
 } from "lucide-react";
 import { format } from "date-fns";
 import { ReplyQuote } from "./reply-quote";
@@ -333,6 +334,19 @@ export function MessageBubble({
             isAgent ? "justify-end" : "justify-start",
           )}
         >
+          {/* Deleted on WhatsApp — content stays readable for the team,
+              flagged so agents know the sender withdrew it. */}
+          {message.deleted_at && (
+            <span
+              className={cn(
+                "inline-flex items-center gap-0.5 text-[10px] italic",
+                isAgent ? "text-primary-foreground/70" : "text-red-400",
+              )}
+            >
+              <Ban className="h-2.5 w-2.5" />
+              {t("deleted")}
+            </span>
+          )}
           {/* AI badge — only on replies the auto-reply bot generated
               (always outbound, so it sits on the primary fill). Lets
               agents tell an AI reply from their own / a Flow's at a

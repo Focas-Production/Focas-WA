@@ -9,6 +9,8 @@
     "passwordLabel": "Password",
     "forgotPassword": "Forgot password?",
     "passwordPlaceholder": "Enter your password",
+    "showPassword": "Show password",
+    "hidePassword": "Hide password",
     "signingIn": "Signing in...",
     "signIn": "Sign in",
     "noAccount": "Don't have an account?",
@@ -219,7 +221,8 @@
       "unsupported": "[Unsupported message type]",
       "aiBadge": "AI",
       "aiBadgeTitle": "Sent automatically by the AI assistant",
-      "failedNoReason": "Not delivered — no reason recorded"
+      "failedNoReason": "Not delivered — no reason recorded",
+      "deleted": "Deleted"
     },
     "actions": {
       "reply": "Reply",

@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js'
 import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption'
 import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
 import { normalizePhone } from '@/lib/whatsapp/phone-utils'
+import { findMessageIdByWamid } from '@/lib/whatsapp/wamid'
 import { findExistingContact, isUniqueViolation } from '@/lib/contacts/dedupe'
 import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
 import { runAutomationsForTrigger } from '@/lib/automations/engine'
@@ -51,6 +52,8 @@ interface WhatsAppMessage {
   sticker?: { id: string; mime_type: string }
   location?: { latitude: number; longitude: number; name?: string; address?: string }
   reaction?: { message_id: string; emoji: string }
+  /** Set when the customer deletes a message (coexistence numbers only). */
+  revoke?: { original_message_id: string }
   /**
    * Set when the customer taps a button or list row on an interactive
    * message we sent. `button_reply.id` / `list_reply.id` is whatever id
@@ -295,7 +298,7 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
       // Handle status updates
       if (value.statuses) {
         for (const status of value.statuses) {
-          await handleStatusUpdate(status)
+          await handleStatusUpdate(status, value.metadata?.phone_number_id)
         }
       }
 
@@ -448,7 +451,7 @@ async function handleStatusUpdate(status: {
     message?: string
     error_data?: { details?: string }
   }>
-}) {
+}, phoneNumberId?: string) {
   // 0) Wallet: a `failed` delivery status reverses the send-time
   //    charge (charge-on-send, refund-on-failure). This covers
   //    SINGLE sends (inbox/automation), whose debit is keyed by
@@ -472,13 +475,18 @@ async function handleStatusUpdate(status: {
     msgUpdate.error_message =
       statusErrorText(status.errors) ?? 'Delivery failed (no reason given by Meta)'
   }
-  const { error: msgErr } = await supabaseAdmin()
+  const { data: updatedRows, error: msgErr } = await supabaseAdmin()
     .from('messages')
     .update(msgUpdate)
     .eq('message_id', status.id)
+    .select('id')
 
   if (msgErr) {
     console.error('Error updating message status:', msgErr)
+  } else if (!updatedRows?.length && phoneNumberId) {
+    // A message sent from the phone app is stored under its echo id,
+    // which differs from the id its statuses carry (see wamid.ts).
+    await updateEchoMessageStatus(status, phoneNumberId, msgUpdate)
   }
 
   // Webhook fan-out for this status change happens at the END of this
@@ -622,25 +630,92 @@ async function flagBroadcastReplyIfAny(accountId: string, contactId: string) {
 }
 
 /**
+ * Status fallback for a message no row is stored under by exact id.
+ * Resolves the recipient's conversation, then matches on the inner
+ * message key. Only runs for unmatched statuses, which are rare.
+ */
+async function updateEchoMessageStatus(
+  status: { id: string; recipient_id: string },
+  phoneNumberId: string,
+  msgUpdate: Record<string, unknown>
+) {
+  if (!status.recipient_id) return
+  const config = await resolveUniqueConfig(phoneNumberId, 'statuses')
+  if (!config) return
+
+  const contact = await findExistingContact(
+    supabaseAdmin(),
+    config.account_id,
+    normalizePhone(status.recipient_id)
+  )
+  if (!contact) return
+
+  // Same canonical conversation findOrCreateConversation resolves to.
+  const { data: conv } = await supabaseAdmin()
+    .from('conversations')
+    .select('id')
+    .eq('account_id', config.account_id)
+    .eq('contact_id', contact.id)
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle()
+  if (!conv) return
+
+  const messageId = await findMessageIdByWamid(supabaseAdmin(), status.id, conv.id)
+  if (!messageId) return
+
+  const { error } = await supabaseAdmin()
+    .from('messages')
+    .update(msgUpdate)
+    .eq('id', messageId)
+  if (error) {
+    console.error('[webhook] echo status update failed:', error.message)
+  }
+}
+
+/**
  * Resolve a Meta-side message_id into the matching internal UUID, scoped
  * to one conversation. Returns null when we never received the parent
  * (e.g. a swipe-reply to a message older than this CRM install).
+ * Also matches a phone-app message stored under its echo id (see wamid.ts).
  */
 async function lookupInternalIdByMetaId(
   metaId: string,
   conversationId: string
 ): Promise<string | null> {
-  const { data, error } = await supabaseAdmin()
-    .from('messages')
-    .select('id')
-    .eq('message_id', metaId)
-    .eq('conversation_id', conversationId)
-    .maybeSingle()
-  if (error) {
-    console.error('[webhook] lookupInternalIdByMetaId failed:', error.message)
-    return null
+  return findMessageIdByWamid(supabaseAdmin(), metaId, conversationId)
+}
+
+/**
+ * A message deleted on WhatsApp ("Delete for everyone"). Stamps
+ * deleted_at on the original instead of storing the revoke as a bubble;
+ * the inbox keeps showing the content with a "Deleted" label.
+ */
+async function handleRevoke(
+  originalMetaId: string | undefined,
+  conversationId: string
+) {
+  if (!originalMetaId) return
+
+  const targetInternalId = await lookupInternalIdByMetaId(
+    originalMetaId,
+    conversationId
+  )
+  if (!targetInternalId) {
+    console.warn(
+      '[webhook] revoke target message not found; skipping',
+      originalMetaId
+    )
+    return
   }
-  return data?.id ?? null
+
+  const { error } = await supabaseAdmin()
+    .from('messages')
+    .update({ deleted_at: new Date().toISOString() })
+    .eq('id', targetInternalId)
+  if (error) {
+    console.error('[webhook] revoke update failed:', error.message)
+  }
 }
 
 /**
@@ -715,19 +790,25 @@ interface SmbEchoValue {
     timestamp?: string
     type?: string
     text?: { body?: string }
-    image?: { caption?: string }
-    video?: { caption?: string }
-    document?: { caption?: string; filename?: string }
+    image?: { id?: string; mime_type?: string; caption?: string }
+    video?: { id?: string; mime_type?: string; caption?: string }
+    document?: { id?: string; mime_type?: string; caption?: string; filename?: string }
+    audio?: { id?: string; mime_type?: string }
+    sticker?: { id?: string; mime_type?: string }
     reaction?: { message_id?: string; emoji?: string }
+    revoke?: { original_message_id?: string }
   }>
 }
+
+const ECHO_MEDIA_TYPES = new Set(['image', 'video', 'document', 'audio', 'sticker'])
+type EchoMediaType = 'image' | 'video' | 'document' | 'audio' | 'sticker'
 
 /**
  * Mirror phone-app-sent messages into the inbox as agent messages.
  *
- * Media bodies are summarized as text (`[image] caption`) rather than
- * re-fetched: echo media ids are short-lived and the thread mainly
- * needs to show WHAT was said from the phone, not re-host the file.
+ * Media is stored like inbound media — a proxy URL for the Meta media
+ * id, fetched when viewed (Meta keeps webhook media for 7 days). If Meta
+ * won't verify the id, it falls back to a text summary (`[video] caption`).
  * Dedupes on the Meta message id — a message sent via wacrm itself may
  * also echo back, and must not appear twice.
  */
@@ -738,6 +819,8 @@ async function handleSmbMessageEchoes(value: SmbEchoValue) {
 
   const config = await resolveUniqueConfig(phoneNumberId, 'smb_message_echoes')
   if (!config) return
+  // Decrypted on the first media echo only.
+  let accessToken: string | undefined
 
   for (const echo of echoes) {
     if (!echo.id || !echo.to) continue
@@ -779,37 +862,68 @@ async function handleSmbMessageEchoes(value: SmbEchoValue) {
       continue
     }
 
-    let contentText: string
-    switch (echo.type) {
-      case 'text':
-        contentText = echo.text?.body || ''
-        break
-      case 'image':
-        contentText = `[image]${echo.image?.caption ? ' ' + echo.image.caption : ''}`
-        break
-      case 'video':
-        contentText = `[video]${echo.video?.caption ? ' ' + echo.video.caption : ''}`
-        break
-      case 'document':
-        contentText = `[document]${
-          echo.document?.filename ? ' ' + echo.document.filename : ''
-        }`
-        break
-      case 'audio':
-        contentText = '[audio]'
-        break
-      default:
-        contentText = `[${echo.type || 'message'}]`
+    // A message the business deleted from the phone app.
+    if (echo.type === 'revoke') {
+      await handleRevoke(
+        echo.revoke?.original_message_id,
+        convResult.conversation.id
+      )
+      continue
     }
-    if (!contentText) continue
+
+    // Media goes through the same path as inbound media: store the
+    // proxy URL for its Meta media id so the bubble can play it.
+    let contentType = 'text'
+    let contentText: string | null = null
+    let mediaUrl: string | null = null
+    const media = echo.type ? ECHO_MEDIA_TYPES.has(echo.type) : false
+    if (media && echo[echo.type as EchoMediaType]?.id) {
+      accessToken ??= decrypt(config.access_token)
+      const parsed = await parseMessageContent(
+        echo as unknown as WhatsAppMessage,
+        accessToken
+      )
+      if (parsed.mediaUrl) {
+        contentType = toStoredContentType(echo.type!)
+        contentText = parsed.contentText
+        mediaUrl = parsed.mediaUrl
+      }
+    }
+
+    // Text, and media Meta wouldn't hand over, are summarized as text.
+    if (!mediaUrl) {
+      switch (echo.type) {
+        case 'text':
+          contentText = echo.text?.body || ''
+          break
+        case 'image':
+          contentText = `[image]${echo.image?.caption ? ' ' + echo.image.caption : ''}`
+          break
+        case 'video':
+          contentText = `[video]${echo.video?.caption ? ' ' + echo.video.caption : ''}`
+          break
+        case 'document':
+          contentText = `[document]${
+            echo.document?.filename ? ' ' + echo.document.filename : ''
+          }`
+          break
+        case 'audio':
+          contentText = '[audio]'
+          break
+        default:
+          contentText = `[${echo.type || 'message'}]`
+      }
+      if (!contentText) continue
+    }
 
     const { error: insertError } = await supabaseAdmin()
       .from('messages')
       .insert({
         conversation_id: convResult.conversation.id,
         sender_type: 'agent',
-        content_type: 'text',
+        content_type: contentType,
         content_text: contentText,
+        media_url: mediaUrl,
         message_id: echo.id,
         status: 'sent',
       })
@@ -821,7 +935,7 @@ async function handleSmbMessageEchoes(value: SmbEchoValue) {
     await supabaseAdmin()
       .from('conversations')
       .update({
-        last_message_text: contentText,
+        last_message_text: contentText || `[${echo.type}]`,
         last_message_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
@@ -1001,7 +1115,8 @@ async function importHistoryThread(
   const messages = (thread.messages ?? []).filter(
     // Reactions aren't messages (see handleReaction); without the
     // reactor's side we can't attribute them reliably, so skip.
-    (m) => m.id && m.timestamp && m.type !== 'reaction'
+    // Revokes likewise carry no content of their own.
+    (m) => m.id && m.timestamp && m.type !== 'reaction' && m.type !== 'revoke'
   )
   if (!thread.id || messages.length === 0) return
 
@@ -1249,6 +1364,12 @@ async function processMessage(
   // Done before parseMessageContent so the media-URL fetch is skipped.
   if (message.type === 'reaction') {
     await handleReaction(message, conversation.id, contactRecord.id)
+    return
+  }
+
+  // Deletes aren't messages either — mark the original, store nothing.
+  if (message.type === 'revoke') {
+    await handleRevoke(message.revoke?.original_message_id, conversation.id)
     return
   }
 

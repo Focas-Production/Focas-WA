@@ -245,6 +245,12 @@ export interface Message {
    * optimistic bubble. Only set when `status === 'failed'`. Migration 046.
    */
   error_message?: string | null;
+  /**
+   * When the sender deleted the message on WhatsApp ("Delete for
+   * everyone"). The inbox still shows the content, labelled "Deleted".
+   * Migration 049.
+   */
+  deleted_at?: string | null;
   created_at: string;
   reply_to_message_id?: string;
   /**

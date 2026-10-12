@@ -9,6 +9,8 @@
     "passwordLabel": "비밀번호",
     "forgotPassword": "비밀번호를 잊으셨나요?",
     "passwordPlaceholder": "비밀번호를 입력하세요",
+    "showPassword": "비밀번호 표시",
+    "hidePassword": "비밀번호 숨기기",
     "signingIn": "로그인 중...",
     "signIn": "로그인",
     "noAccount": "계정이 없으신가요?",
@@ -219,7 +221,8 @@
       "unsupported": "[지원되지 않는 메시지 형식]",
       "aiBadge": "AI",
       "aiBadgeTitle": "AI 어시스턴트가 자동으로 전송함",
-      "failedNoReason": "전송 실패 — 기록된 사유 없음"
+      "failedNoReason": "전송 실패 — 기록된 사유 없음",
+      "deleted": "삭제됨"
     },
     "actions": {
       "reply": "답장",
