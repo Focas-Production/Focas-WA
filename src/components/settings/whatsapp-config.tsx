@@ -24,6 +24,7 @@ import { Switch } from '@/components/ui/switch';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { SettingsPanelHead } from './settings-panel-head';
+import { WhatsAppAccountStatus } from './whatsapp-account-status';
 import {
   Accordion,
   AccordionItem,
@@ -811,6 +812,9 @@ export function WhatsAppConfig() {
             )}
           </Alert>
         )}
+
+        {/* Messaging limit tier + quality rating, live from Meta */}
+        {config && connectionStatus === 'connected' && <WhatsAppAccountStatus />}
 
         {/* Embedded Signup */}
         <Card>

@@ -30,6 +30,9 @@ describe('serializeContact', () => {
       email: null,
       company: 'Acme',
       avatar_url: null,
+      allow_campaign: true,
+      allow_api_templates: true,
+      allow_automation_templates: true,
       tags: [{ id: 't1', name: 'vip', color: '#fff' }],
       created_at: '2026-01-01T00:00:00Z',
       updated_at: '2026-01-02T00:00:00Z',
@@ -48,6 +51,13 @@ describe('serializeContact', () => {
       updated_at: 'b',
     };
     expect(serializeContact(row).tags).toEqual([]);
+  });
+
+  it('serializes allow_campaign, defaulting a missing value to true', () => {
+    const base = { id: 'c3', phone: '+1', created_at: 'a', updated_at: 'b' };
+    expect(serializeContact({ ...base, allow_campaign: false }).allow_campaign).toBe(false);
+    expect(serializeContact({ ...base, allow_campaign: true }).allow_campaign).toBe(true);
+    expect(serializeContact(base).allow_campaign).toBe(true);
   });
 });
 

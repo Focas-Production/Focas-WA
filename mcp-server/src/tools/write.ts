@@ -62,13 +62,17 @@ export function registerWriteTools(server: McpServer, client: WacrmClient): void
     {
       title: 'Create contact',
       description:
-        'Create a contact by phone number (E.164, required). Find-or-create: if a contact with that phone already exists it is returned unchanged. Optional: name, email, company, and tags (tag names, created if missing).',
+        'Create a contact by phone number (E.164, required). Find-or-create: if a contact with that phone already exists it is returned unchanged. Optional: name, email, company, tags (tag names, created if missing), and allow_campaign (false opts the contact out of broadcast campaigns; applied to an existing contact too).',
       inputSchema: {
         phone: z.string().describe('Phone number in E.164 format, e.g. +14155550123.'),
         name: z.string().optional(),
         email: z.string().email().optional(),
         company: z.string().optional(),
         tags: z.array(z.string()).optional().describe('Tag names; created if they do not exist.'),
+        allow_campaign: z
+          .boolean()
+          .optional()
+          .describe('Campaign opt-in (default true). false = excluded from every broadcast.'),
       },
       annotations: { title: 'Create contact', readOnlyHint: false, openWorldHint: true },
     },
@@ -80,13 +84,25 @@ export function registerWriteTools(server: McpServer, client: WacrmClient): void
     {
       title: 'Update contact',
       description:
-        'Update an existing contact. Only the fields you pass are changed. Pass tags (an array of tag names) to replace the contact’s tags entirely.',
+        'Update an existing contact. Only the fields you pass are changed. Pass tags (an array of tag names) to replace the contact’s tags entirely. Pass allow_campaign=false to opt the contact out of broadcast campaigns (true opts back in).',
       inputSchema: {
         id: z.string().describe('Contact id.'),
         name: z.string().optional(),
         email: z.string().email().optional(),
         company: z.string().optional(),
         tags: z.array(z.string()).optional().describe('Replaces the contact’s tags.'),
+        allow_campaign: z
+          .boolean()
+          .optional()
+          .describe('Campaign opt-in. false = excluded from every broadcast.'),
+        allow_api_templates: z
+          .boolean()
+          .optional()
+          .describe('false = template messages sent through the API / Shopify are refused for this contact.'),
+        allow_automation_templates: z
+          .boolean()
+          .optional()
+          .describe('false = template messages sent by automations are refused for this contact.'),
       },
       annotations: { title: 'Update contact', readOnlyHint: false, openWorldHint: true },
     },

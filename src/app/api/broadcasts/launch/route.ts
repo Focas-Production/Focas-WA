@@ -16,9 +16,11 @@ import type { VariableMapping } from '@/lib/whatsapp/variable-resolution'
  * Body: { name, template_name, template_language, audience,
  *         variables, header_media_url?, scheduled_at?, draft_id? }
  *
- * 201: { broadcast_id, total_recipients, scheduled_at, scheduled,
- *        messaging_limit? }  — messaging_limit is set when the audience
- *        exceeds the number's 24 h unique-user limit (advisory).
+ * 201: { broadcast_id, total_recipients, opted_out, scheduled_at,
+ *        scheduled, messaging_limit? }  — opted_out counts audience
+ *        contacts skipped because allow_campaign is off; messaging_limit
+ *        is set when the audience exceeds the number's 24 h unique-user
+ *        limit (advisory).
  */
 export async function POST(request: Request) {
   try {
@@ -60,6 +62,7 @@ export async function POST(request: Request) {
       {
         broadcast_id: result.broadcastId,
         total_recipients: result.totalRecipients,
+        opted_out: result.optedOut,
         scheduled_at: result.scheduledAt,
         scheduled: result.isScheduled,
         ...(overLimit ? { messaging_limit: profile!.messagingLimit } : {}),

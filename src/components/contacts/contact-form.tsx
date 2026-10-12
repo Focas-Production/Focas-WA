@@ -24,6 +24,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
+import { Switch } from '@/components/ui/switch';
 import { Loader2, AlertTriangle } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
@@ -55,6 +56,9 @@ export function ContactForm({
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
   const [company, setCompany] = useState('');
+  const [allowCampaign, setAllowCampaign] = useState(true);
+  const [allowApiTemplates, setAllowApiTemplates] = useState(true);
+  const [allowAutomationTemplates, setAllowAutomationTemplates] = useState(true);
   const [saving, setSaving] = useState(false);
 
   // Duplicate-phone detection for NEW contacts. `exact` (same digits)
@@ -76,6 +80,9 @@ export function ContactForm({
       setPhone(contact?.phone ?? '');
       setEmail(contact?.email ?? '');
       setCompany(contact?.company ?? '');
+      setAllowCampaign(contact?.allow_campaign !== false);
+      setAllowApiTemplates(contact?.allow_api_templates !== false);
+      setAllowAutomationTemplates(contact?.allow_automation_templates !== false);
       setSelectedTagIds(contactTags.map((ct) => ct.tag_id));
       setDupMatch(null);
       fetchTags();
@@ -157,6 +164,9 @@ export function ContactForm({
             phone: phone.trim(),
             email: email.trim() || null,
             company: company.trim() || null,
+            allow_campaign: allowCampaign,
+            allow_api_templates: allowApiTemplates,
+            allow_automation_templates: allowAutomationTemplates,
             updated_at: new Date().toISOString(),
           })
           .eq('id', contactId);
@@ -171,6 +181,9 @@ export function ContactForm({
             phone: phone.trim(),
             email: email.trim() || null,
             company: company.trim() || null,
+            allow_campaign: allowCampaign,
+            allow_api_templates: allowApiTemplates,
+            allow_automation_templates: allowAutomationTemplates,
           })
           .select('id')
           .single();
@@ -321,6 +334,34 @@ export function ContactForm({
               placeholder={t('companyPlaceholder')}
               className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
             />
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-muted-foreground">{t('permissionsLabel')}</Label>
+            <div className="divide-y divide-border rounded-md border border-border">
+              {(
+                [
+                  ['cf-allow-campaign', 'allowCampaign', allowCampaign, setAllowCampaign],
+                  ['cf-allow-api', 'allowApiTemplates', allowApiTemplates, setAllowApiTemplates],
+                  [
+                    'cf-allow-automation',
+                    'allowAutomationTemplates',
+                    allowAutomationTemplates,
+                    setAllowAutomationTemplates,
+                  ],
+                ] as const
+              ).map(([id, key, checked, onChange]) => (
+                <div key={id} className="flex items-start justify-between gap-3 px-3 py-2.5">
+                  <div className="space-y-0.5">
+                    <Label htmlFor={id} className="text-foreground">
+                      {t(`${key}Label`)}
+                    </Label>
+                    <p className="text-xs text-muted-foreground">{t(`${key}Hint`)}</p>
+                  </div>
+                  <Switch id={id} checked={checked} onCheckedChange={onChange} />
+                </div>
+              ))}
+            </div>
           </div>
 
           <div className="space-y-2">

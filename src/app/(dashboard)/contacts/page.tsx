@@ -49,6 +49,9 @@ import {
   SlidersHorizontal,
   Filter,
   X,
+  Megaphone,
+  BellOff,
+  Check,
 } from 'lucide-react';
 import { ContactForm } from '@/components/contacts/contact-form';
 import { ContactDetailView } from '@/components/contacts/contact-detail-view';
@@ -59,6 +62,10 @@ import { GatedButton } from '@/components/ui/gated-button';
 import { useTranslations } from 'next-intl';
 
 const PAGE_SIZE = 25;
+
+/** Campaign opt-in filter (contacts.allow_campaign, migration 047). */
+type CampaignFilter = 'all' | 'allowed' | 'opted_out';
+
 
 interface ContactWithTags extends Contact {
   tags?: Tag[];
@@ -77,6 +84,9 @@ export default function ContactsPage() {
   const [totalCount, setTotalCount] = useState(0);
   // Tag filter — contacts shown must have ANY of these tags (OR).
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
+  const [campaignFilter, setCampaignFilter] = useState<CampaignFilter>('all');
+  // Contacts whose campaign flag is being saved — disables the bulk actions.
+  const [savingCampaign, setSavingCampaign] = useState<Set<string>>(new Set());
 
   // Modals
   const [formOpen, setFormOpen] = useState(false);
@@ -129,6 +139,8 @@ export default function ContactsPage() {
     const from = page * PAGE_SIZE;
     const to = from + PAGE_SIZE - 1;
     const term = search.trim();
+    const allowCampaign =
+      campaignFilter === 'all' ? null : campaignFilter === 'allowed';
 
     let contactRows: Contact[];
     let count: number;
@@ -143,6 +155,7 @@ export default function ContactsPage() {
         p_search: term || null,
         p_limit: PAGE_SIZE,
         p_offset: from,
+        p_allow_campaign: allowCampaign,
       });
       if (seq !== fetchSeq.current) return; // superseded by a newer fetch
       if (error) {
@@ -163,6 +176,9 @@ export default function ContactsPage() {
       if (term) {
         const like = `%${term}%`;
         query = query.or(`name.ilike.${like},phone.ilike.${like},email.ilike.${like}`);
+      }
+      if (allowCampaign !== null) {
+        query = query.eq('allow_campaign', allowCampaign);
       }
 
       const { data, count: exactCount, error } = await query;
@@ -207,7 +223,7 @@ export default function ContactsPage() {
 
     setContacts(enriched);
     setLoading(false);
-  }, [supabase, page, search, selectedTagIds, tagsMap, t]);
+  }, [supabase, page, search, selectedTagIds, campaignFilter, tagsMap, t]);
 
   // Load-once-on-mount-ish data fetches. Each setter inside runs
   // inside an async promise completion (Supabase await), not
@@ -314,6 +330,56 @@ export default function ContactsPage() {
     setBulkDeleteOpen(false);
   }
 
+  /**
+   * Switch campaigns on/off for one or more contacts. Optimistic: the
+   * rows flip immediately and roll back if the write fails. With a
+   * campaign filter active the list is refetched, since the changed
+   * rows may no longer match it.
+   */
+  async function setAllowCampaign(ids: string[], allow: boolean) {
+    if (ids.length === 0) return;
+    const idSet = new Set(ids);
+    const previous = new Map(
+      contacts.filter((c) => idSet.has(c.id)).map((c) => [c.id, c.allow_campaign])
+    );
+    setContacts((prev) =>
+      prev.map((c) => (idSet.has(c.id) ? { ...c, allow_campaign: allow } : c))
+    );
+    setSavingCampaign((prev) => new Set([...prev, ...ids]));
+
+    const { error } = await supabase
+      .from('contacts')
+      .update({ allow_campaign: allow, updated_at: new Date().toISOString() })
+      .in('id', ids);
+
+    setSavingCampaign((prev) => {
+      const next = new Set(prev);
+      ids.forEach((id) => next.delete(id));
+      return next;
+    });
+
+    if (error) {
+      setContacts((prev) =>
+        prev.map((c) =>
+          previous.has(c.id) ? { ...c, allow_campaign: previous.get(c.id)! } : c
+        )
+      );
+      toast.error(t('toastCampaignFailed'));
+      return;
+    }
+
+    toast.success(
+      ids.length === 1
+        ? allow
+          ? t('toastCampaignAllowed')
+          : t('toastCampaignOptedOut')
+        : allow
+          ? t('toastBulkCampaignAllowed', { count: ids.length })
+          : t('toastBulkCampaignOptedOut', { count: ids.length })
+    );
+    if (campaignFilter !== 'all') fetchContacts();
+  }
+
   const totalPages = Math.ceil(totalCount / PAGE_SIZE);
   const hasNext = page < totalPages - 1;
   const hasPrev = page > 0;
@@ -323,7 +389,8 @@ export default function ContactsPage() {
   const allTags = Object.values(tagsMap).sort((a, b) =>
     a.name.localeCompare(b.name)
   );
-  const hasActiveFilters = search.trim().length > 0 || selectedTagIds.length > 0;
+  const hasActiveFilters =
+    search.trim().length > 0 || selectedTagIds.length > 0 || campaignFilter !== 'all';
 
   function toggleTagFilter(tagId: string) {
     setSelectedTagIds((prev) =>
@@ -460,6 +527,45 @@ export default function ContactsPage() {
               )}
             </PopoverContent>
           </Popover>
+
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <Button
+                  variant="outline"
+                  className={`border-border hover:bg-muted shrink-0 ${
+                    campaignFilter === 'all'
+                      ? 'text-muted-foreground'
+                      : 'text-foreground'
+                  }`}
+                />
+              }
+            >
+              {campaignFilter === 'opted_out' ? (
+                <BellOff className="size-4" />
+              ) : (
+                <Megaphone className="size-4" />
+              )}
+              {t(`campaignFilter.${campaignFilter}`)}
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="bg-popover border-border">
+              {(['all', 'allowed', 'opted_out'] as const).map((value) => (
+                <DropdownMenuItem
+                  key={value}
+                  onClick={() => {
+                    setCampaignFilter(value);
+                    setPage(0);
+                  }}
+                  className="text-popover-foreground focus:bg-muted focus:text-foreground"
+                >
+                  <Check
+                    className={`size-4 ${campaignFilter === value ? 'opacity-100' : 'opacity-0'}`}
+                  />
+                  {t(`campaignFilter.${value}`)}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
 
         {/* Active tag-filter chips */}
@@ -513,6 +619,30 @@ export default function ContactsPage() {
             >
               {t('clearSelection')}
             </Button>
+            <GatedButton
+              variant="outline"
+              size="sm"
+              canAct={canEdit}
+              gateReason="change campaign settings"
+              disabled={savingCampaign.size > 0}
+              onClick={() => setAllowCampaign([...selected], true)}
+              className="border-border text-muted-foreground hover:bg-muted"
+            >
+              <Megaphone className="size-4" />
+              {t('allowCampaigns')}
+            </GatedButton>
+            <GatedButton
+              variant="outline"
+              size="sm"
+              canAct={canEdit}
+              gateReason="change campaign settings"
+              disabled={savingCampaign.size > 0}
+              onClick={() => setAllowCampaign([...selected], false)}
+              className="border-border text-muted-foreground hover:bg-muted"
+            >
+              <BellOff className="size-4" />
+              {t('optOutCampaigns')}
+            </GatedButton>
             <GatedButton
               variant="destructive"
               size="sm"

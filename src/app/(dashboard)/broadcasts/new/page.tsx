@@ -114,7 +114,7 @@ function NewBroadcastPageInner() {
     if (!template) return;
 
     try {
-      const { broadcastId, totalRecipients, messagingLimit } = await createAndSendBroadcast({
+      const { broadcastId, totalRecipients, optedOut, messagingLimit } = await createAndSendBroadcast({
         name,
         template,
         audience: {
@@ -134,6 +134,9 @@ function NewBroadcastPageInner() {
         toast.success(
           t('toastScheduled', { when: new Date(scheduledAt).toLocaleString() }),
         );
+      }
+      if (optedOut > 0) {
+        toast.info(t('toastOptedOutSkipped', { count: optedOut }));
       }
       if (messagingLimit) {
         toast.warning(

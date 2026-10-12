@@ -1,3 +1,5 @@
+import { parseAllowCampaign } from '@/lib/contacts/campaign-consent';
+
 /**
  * CSV parsing for the contacts import modal. Shared + unit-tested so
  * tag-column handling stays aligned with phone/name/email/company.
@@ -10,7 +12,20 @@ export interface ParsedContactRow {
   company?: string;
   /** Tag names from the optional `tags` column (comma/semicolon separated). */
   tagNames: string[];
+  /** From the optional `allow_campaign` column; undefined = blank or
+   *  unrecognized cell, which leaves the column default (true). */
+  allowCampaign?: boolean;
 }
+
+/** Header spellings accepted for the campaign opt-in column (Wati
+ *  exports use `allowcampaign` / `allowbroadcast`). */
+const ALLOW_CAMPAIGN_HEADERS = [
+  'allow_campaign',
+  'allowcampaign',
+  'allow campaign',
+  'allow_broadcast',
+  'allowbroadcast',
+];
 
 /** Split a CSV cell into unique tag names (case-insensitive de-dupe). */
 export function parseTagCell(value: string | undefined): string[] {
@@ -58,6 +73,9 @@ export function parseContactCsv(text: string): ParseContactCsvResult {
   const emailIdx = headers.indexOf('email');
   const companyIdx = headers.indexOf('company');
   const tagsIdx = headers.indexOf('tags');
+  const allowCampaignIdx = headers.findIndex((h) =>
+    ALLOW_CAMPAIGN_HEADERS.includes(h)
+  );
 
   const rows: ParsedContactRow[] = [];
 
@@ -85,6 +103,10 @@ export function parseContactCsv(text: string): ParseContactCsvResult {
           : undefined,
       tagNames:
         tagsIdx >= 0 ? parseTagCell(values[tagsIdx]?.replace(/["']/g, '')) : [],
+      allowCampaign:
+        allowCampaignIdx >= 0
+          ? parseAllowCampaign(values[allowCampaignIdx]?.replace(/["']/g, ''))
+          : undefined,
     });
   }
 

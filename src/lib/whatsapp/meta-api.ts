@@ -161,6 +161,81 @@ export async function getPhoneSendingProfile(
   }
 }
 
+export interface PhoneAccountStatus {
+  displayPhoneNumber: string | null
+  verifiedName: string | null
+  /** GREEN | YELLOW | RED | UNKNOWN — Meta's number quality rating. */
+  qualityRating: string | null
+  /** APPROVED | PENDING_REVIEW | DECLINED | … — display-name review. */
+  nameStatus: string | null
+  /** CONNECTED | FLAGGED | RESTRICTED | … */
+  status: string | null
+  throughputLevel: string | null
+  isCoexistence: boolean
+  /** Raw tier string from Meta, e.g. 'TIER_10K'. */
+  messagingLimitTier: string | null
+  /** Parsed tier: unique users per rolling 24 h, Infinity for unlimited. */
+  messagingLimit: number | null
+}
+
+/**
+ * Messaging-limit tier + quality rating for the settings page. The
+ * limit lives in `whatsapp_business_manager_messaging_limit` (business
+ * portfolio level, newer) with the deprecated per-number
+ * `messaging_limit_tier` as fallback; each is fetched on its own and
+ * tolerated missing so a removed field can't break the core lookup.
+ */
+export async function getPhoneAccountStatus(
+  args: VerifyPhoneNumberArgs
+): Promise<PhoneAccountStatus> {
+  const { phoneNumberId, accessToken } = args
+  const headers = { Authorization: `Bearer ${accessToken}` }
+  const optionalField = async (field: string): Promise<string | null> => {
+    try {
+      const res = await fetch(`${META_API_BASE}/${phoneNumberId}?fields=${field}`, { headers })
+      if (!res.ok) return null
+      const data = (await res.json()) as Record<string, unknown>
+      return typeof data[field] === 'string' ? (data[field] as string) : null
+    } catch {
+      return null
+    }
+  }
+
+  const [coreRes, portfolioTier, legacyTier] = await Promise.all([
+    fetch(
+      `${META_API_BASE}/${phoneNumberId}?fields=display_phone_number,verified_name,quality_rating,name_status,status,throughput,is_on_biz_app`,
+      { headers }
+    ),
+    optionalField('whatsapp_business_manager_messaging_limit'),
+    optionalField('messaging_limit_tier'),
+  ])
+  if (!coreRes.ok) {
+    await throwMetaError(coreRes, `Meta API error: ${coreRes.status}`)
+  }
+  const core = (await coreRes.json()) as {
+    display_phone_number?: string
+    verified_name?: string
+    quality_rating?: string
+    name_status?: string
+    status?: string
+    throughput?: { level?: string }
+    is_on_biz_app?: boolean
+  }
+
+  const tier = portfolioTier ?? legacyTier
+  return {
+    displayPhoneNumber: core.display_phone_number ?? null,
+    verifiedName: core.verified_name ?? null,
+    qualityRating: core.quality_rating ?? null,
+    nameStatus: core.name_status ?? null,
+    status: core.status ?? null,
+    throughputLevel: core.throughput?.level ?? null,
+    isCoexistence: core.is_on_biz_app === true,
+    messagingLimitTier: tier,
+    messagingLimit: parseMessagingLimitTier(tier),
+  }
+}
+
 // ============================================================
 // Cloud API registration (subscription for inbound webhooks)
 // ============================================================

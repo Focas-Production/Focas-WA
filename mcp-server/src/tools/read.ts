@@ -32,10 +32,14 @@ export function registerReadTools(server: McpServer, client: WacrmClient): void 
     {
       title: 'List contacts',
       description:
-        'List contacts in the CRM, newest first. Optionally filter by a free-text search (matches name or phone) or by a tag id. Results are paginated: pass the returned next_cursor to fetch the next page.',
+        'List contacts in the CRM, newest first. Optionally filter by a free-text search (matches name or phone), by a tag id, or by campaign opt-in (allow_campaign). Results are paginated: pass the returned next_cursor to fetch the next page.',
       inputSchema: {
         search: z.string().optional().describe('Free-text search over name or phone number.'),
         tag: z.string().optional().describe('Tag id to filter by.'),
+        allow_campaign: z
+          .boolean()
+          .optional()
+          .describe('true = only contacts who receive campaigns; false = only opted-out contacts.'),
         limit: z
           .number()
           .int()

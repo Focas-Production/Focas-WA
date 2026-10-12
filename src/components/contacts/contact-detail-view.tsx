@@ -26,6 +26,8 @@ import { Textarea } from '@/components/ui/textarea';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Switch } from '@/components/ui/switch';
+import { useCan } from '@/hooks/use-can';
 import {
   Phone,
   Mail,
@@ -41,6 +43,18 @@ import {
   LayoutTemplate,
 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
+
+type PermissionField =
+  | 'allow_campaign'
+  | 'allow_api_templates'
+  | 'allow_automation_templates';
+
+/** Per-contact messaging switches (migrations 047/048) → i18n key stem. */
+const PERMISSIONS: { field: PermissionField; key: string }[] = [
+  { field: 'allow_campaign', key: 'allowCampaign' },
+  { field: 'allow_api_templates', key: 'allowApiTemplates' },
+  { field: 'allow_automation_templates', key: 'allowAutomationTemplates' },
+];
 
 interface ContactDetailViewProps {
   open: boolean;
@@ -58,6 +72,7 @@ export function ContactDetailView({
   const t = useTranslations('Contacts.detailView');
   const supabase = createClient();
   const { accountId, defaultCurrency } = useAuth();
+  const canEdit = useCan('send-messages');
 
   const [contact, setContact] = useState<Contact | null>(null);
   const [loading, setLoading] = useState(false);
@@ -75,6 +90,7 @@ export function ContactDetailView({
   const [editEmail, setEditEmail] = useState('');
   const [editCompany, setEditCompany] = useState('');
   const [savingDetails, setSavingDetails] = useState(false);
+  const [savingPermission, setSavingPermission] = useState(false);
 
   // Tags tab
   const [allTags, setAllTags] = useState<Tag[]>([]);
@@ -223,6 +239,30 @@ export function ContactDetailView({
       onUpdated();
     }
     setSavingDetails(false);
+  }
+
+  /** Save one messaging-permission switch (migrations 047/048). */
+  async function savePermission(field: PermissionField, allow: boolean) {
+    if (!contactId || !contact) return;
+    setSavingPermission(true);
+    const previous = contact;
+    setContact({ ...contact, [field]: allow });
+    const { data, error } = await supabase
+      .from('contacts')
+      .update({ [field]: allow, updated_at: new Date().toISOString() })
+      .eq('id', contactId)
+      .select('*')
+      .single();
+    if (error || !data) {
+      setContact(previous);
+      toast.error(t('toastPermissionFailed'));
+    } else {
+      // Reload the row for the trigger-stamped allow_campaign_updated_at.
+      setContact(data as Contact);
+      toast.success(t('toastPermissionSaved'));
+      onUpdated();
+    }
+    setSavingPermission(false);
   }
 
   async function toggleTag(tagId: string) {
@@ -431,6 +471,35 @@ export function ContactDetailView({
                     )}
                   </div>
                 </div>
+              </div>
+              <div className="mt-3 space-y-2">
+                {PERMISSIONS.map(({ field, key }) => {
+                  const allowed = contact[field] !== false;
+                  const since =
+                    field === 'allow_campaign' && !allowed && contact.allow_campaign_updated_at
+                      ? new Date(contact.allow_campaign_updated_at).toLocaleDateString()
+                      : null;
+                  return (
+                    <label key={field} className="flex items-center gap-2 text-xs">
+                      <Switch
+                        checked={allowed}
+                        disabled={!canEdit || savingPermission}
+                        onCheckedChange={(checked) => savePermission(field, checked)}
+                        aria-label={t(`${key}Label`)}
+                      />
+                      <span className="flex flex-col">
+                        <span className="text-popover-foreground">{t(`${key}Label`)}</span>
+                        <span className={allowed ? 'text-muted-foreground' : 'text-red-400'}>
+                          {allowed
+                            ? t(`${key}Hint`)
+                            : since
+                              ? t('blockedSince', { date: since })
+                              : t('blocked')}
+                        </span>
+                      </span>
+                    </label>
+                  );
+                })}
               </div>
               <div className="mt-3">
                 <Button

@@ -299,7 +299,8 @@
         "email": "Email",
         "company": "Company",
         "tags": "Tags",
-        "createdAt": "Created"
+        "createdAt": "Created",
+        "campaigns": "Campaigns"
       },
       "loading": "Loading contacts...",
       "noContactsMatch": "No contacts match your filters.",
@@ -320,7 +321,23 @@
       "toastFailedDelete": "Failed to delete contact",
       "toastDeleted": "Contact deleted",
       "toastBulkFailedDelete": "Failed to delete contacts",
-      "toastBulkDeleted": "{count} contacts deleted"
+      "toastBulkDeleted": "{count} contacts deleted",
+      "allowCampaigns": "Allow campaigns",
+      "optOutCampaigns": "Opt out of campaigns",
+      "campaignAllowed": "Allowed",
+      "campaignOptedOut": "Opted out",
+      "campaignSwitchLabel": "Allow campaigns for {name}",
+      "optedOutSince": "Opted out since {date}",
+      "campaignFilter": {
+        "all": "Campaigns: all",
+        "allowed": "Campaigns: allowed",
+        "opted_out": "Campaigns: not allowed"
+      },
+      "toastCampaignFailed": "Failed to update campaign setting",
+      "toastCampaignAllowed": "Campaigns allowed for this contact",
+      "toastCampaignOptedOut": "Contact opted out of campaigns",
+      "toastBulkCampaignAllowed": "Campaigns allowed for {count} contacts",
+      "toastBulkCampaignOptedOut": "{count} contacts opted out of campaigns"
     },
     "form": {
       "addTitle": "Add Contact",
@@ -353,7 +370,14 @@
       "dupSimilar": "A contact with a very similar number already exists.",
       "loadingTags": "Loading tags...",
       "noTagsAvailable": "No tags available. Create tags in Settings.",
-      "phoneRequired": "Phone number is required"
+      "phoneRequired": "Phone number is required",
+      "allowCampaignLabel": "Allow campaigns",
+      "allowCampaignHint": "Turn off to exclude this contact from all broadcast campaigns. One-to-one messages are not affected.",
+      "permissionsLabel": "Messaging permissions",
+      "allowApiTemplatesLabel": "Allow API template messages",
+      "allowApiTemplatesHint": "Turn off to refuse template messages sent through the API or Shopify integration.",
+      "allowAutomationTemplatesLabel": "Allow automation template messages",
+      "allowAutomationTemplatesHint": "Turn off to refuse template messages sent by automation rules."
     },
     "detailView": {
       "tabs": {
@@ -414,11 +438,21 @@
       "toastCustomFieldsSaved": "Custom fields saved",
       "toastCustomFieldsFailed": "Failed to save custom fields",
       "toastTemplateSent": "Template \"{name}\" sent",
-      "toastTemplateFailed": "Failed to send template: {reason}"
+      "toastTemplateFailed": "Failed to send template: {reason}",
+      "allowCampaignLabel": "Allow campaigns",
+      "allowCampaignHint": "Receives broadcast campaigns",
+      "allowApiTemplatesLabel": "Allow API template messages",
+      "allowApiTemplatesHint": "Receives templates sent via the API / Shopify",
+      "allowAutomationTemplatesLabel": "Allow automation template messages",
+      "allowAutomationTemplatesHint": "Receives templates sent by automations",
+      "blocked": "Off — these messages are not sent",
+      "blockedSince": "Off since {date} — these messages are not sent",
+      "toastPermissionFailed": "Failed to update messaging permission",
+      "toastPermissionSaved": "Messaging permission updated"
     },
     "importModal": {
       "title": "Import Contacts",
-      "desc": "Upload a CSV with a required <phoneCode>phone</phoneCode> column. Optional: <nameCode>name</nameCode>, <emailCode>email</emailCode>, <companyCode>company</companyCode>, <tagsCode>tags</tagsCode> (comma-separated; quote multi-tag cells).",
+      "desc": "Upload a CSV with a required <phoneCode>phone</phoneCode> column. Optional: <nameCode>name</nameCode>, <emailCode>email</emailCode>, <companyCode>company</companyCode>, <tagsCode>tags</tagsCode> (comma-separated; quote multi-tag cells), <allowCampaignCode>allow_campaign</allowCampaignCode> (true/false; blank = true).",
       "uploadDropzone": "Click to choose a CSV file",
       "uploadHint": ".csv up to your browser limit",
       "rowsReady": "{count} row ready",
@@ -688,7 +722,8 @@
       "toastFailedDraft": "Failed to save draft: {error}",
       "toastDraftSaved": "Draft saved",
       "toastScheduled": "Broadcast scheduled for {when}.",
-      "toastOverLimit": "Your WhatsApp number can message {limit} different people per 24 hours, and this broadcast has {count}. Sends past the limit will fail (and be refunded)."
+      "toastOverLimit": "Your WhatsApp number can message {limit} different people per 24 hours, and this broadcast has {count}. Sends past the limit will fail (and be refunded).",
+      "toastOptedOutSkipped": "{count} contact(s) skipped — opted out of campaigns"
     },
     "wizard": {
       "next": "Next",
@@ -742,7 +777,9 @@
         "errorLoadTags": "Failed to load tags",
         "errorLoadFields": "Failed to load custom fields",
         "errorCsvParse": "Could not parse CSV file.",
-        "errorCsvMissingPhone": "CSV must have a 'phone' column."
+        "errorCsvMissingPhone": "CSV must have a 'phone' column.",
+        "optedOutSkipped": "{count} opted-out contact(s) will be skipped",
+        "optedOutBadge": "Opted out"
       },
       "personalize": {
         "title": "Personalize Variables",
@@ -1553,6 +1590,30 @@
       "step4_4": "Enter the same <strong class=\"text-foreground\">Verify Token</strong> you set here",
       "step4_5": "Subscribe to \"messages\" webhook field",
       "metaDocs": "Meta WhatsApp API Documentation"
+    },
+    "whatsappStatus": {
+      "messagingLimitTitle": "Messaging limit",
+      "lastUpdated": "Last updated: {date}",
+      "refresh": "Refresh",
+      "current": "Current",
+      "unlimited": "Unlimited",
+      "tierDesc": "Business-initiated conversations in a rolling 24-hour period",
+      "unlimitedDesc": "You can message unlimited business-initiated conversations",
+      "tierUnknown": "Meta did not report a messaging limit tier for this number.",
+      "serviceNote": "Note: You can always send unlimited service conversations. If users message you, you can reply to them within 24 hours without any limit.",
+      "loadFailed": "Could not load messaging limit and quality rating from Meta.",
+      "qualityTitle": "Quality rating",
+      "quality": {
+        "high": "High",
+        "medium": "Medium",
+        "low": "Low",
+        "unknown": "Unknown"
+      },
+      "qualityIntro": "The quality rating is determined by the quality of messages you send. To maintain a high quality rating, please ensure:",
+      "qualityTip1": "Only send messages to users who have opted in",
+      "qualityTip2": "Do not send spammy messages",
+      "qualityTip3": "Allow your users to opt out of your messages",
+      "qualityWarning": "A medium or low rating can stop your messaging limit from increasing, or lower it. Reduce template sends and review recent campaigns."
     },
     "sections": {
       "overview": "Overview",

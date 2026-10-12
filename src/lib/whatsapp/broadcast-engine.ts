@@ -44,6 +44,7 @@
 
 import { supabaseAdmin } from '@/lib/automations/admin-client'
 import { resolveAuditUserId } from '@/lib/api/v1/contacts'
+import { canReceiveCampaign, OPTED_OUT_MESSAGE } from '@/lib/contacts/campaign-consent'
 import { selectByChunks } from '@/lib/supabase/select-all'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import { findOrCreateConversationRow } from '@/lib/whatsapp/resolve-conversation'
@@ -802,6 +803,15 @@ async function deliver(broadcast: ClaimedBroadcast, resumed: boolean): Promise<v
       const phone = sanitizePhoneForMeta(contact?.phone ?? '')
       if (!contact || !isValidE164(phone)) {
         await recordResult(recipient.id, { status: 'failed', error_message: 'Invalid phone number' })
+        return
+      }
+      // Re-checked at send time (the contact row is loaded fresh with
+      // each page): someone who opted out after the campaign was
+      // launched or scheduled is skipped, never sent. Not counted
+      // toward the failure breaker — it says nothing about Meta.
+      // The settle at the end refunds them like any unsent recipient.
+      if (!canReceiveCampaign(contact)) {
+        await recordResult(recipient.id, { status: 'failed', error_message: OPTED_OUT_MESSAGE })
         return
       }
 

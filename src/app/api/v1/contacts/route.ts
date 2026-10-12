@@ -3,7 +3,8 @@
 // POST /api/v1/contacts  — create a contact  (scope: contacts:write)
 //
 // List is keyset-paginated (see src/lib/api/v1/pagination.ts) and
-// supports `?search=` (name/phone) and `?tag=<tagId>` filters. Create
+// supports `?search=` (name/phone), `?tag=<tagId>` and
+// `?allow_campaign=true|false` filters. Create
 // is find-or-create by phone: an existing match returns 200 with
 // `created: false`; a new row returns 201 with `created: true`.
 // ============================================================
@@ -24,6 +25,7 @@ import {
   resolveAuditUserId,
   ContactError,
 } from '@/lib/api/v1/contacts';
+import { parseAllowCampaign } from '@/lib/contacts/campaign-consent';
 
 // PostgREST filter values are comma/paren-delimited; strip anything
 // that could break the `.or()` grammar before interpolating a search
@@ -39,6 +41,12 @@ export async function GET(request: Request) {
     const url = new URL(request.url);
     const search = sanitizeSearch(url.searchParams.get('search') ?? '');
     const tag = url.searchParams.get('tag');
+    const allowCampaignParam = url.searchParams.get('allow_campaign');
+    const allowCampaign =
+      allowCampaignParam === null ? undefined : parseAllowCampaign(allowCampaignParam);
+    if (allowCampaignParam !== null && allowCampaign === undefined) {
+      return fail('bad_request', "'allow_campaign' must be true or false", 400);
+    }
 
     // When filtering by tag, add an aliased INNER join on contact_tags
     // used purely for the WHERE — the parent is kept only if it has the
@@ -61,6 +69,10 @@ export async function GET(request: Request) {
 
     if (tag) {
       query = query.eq('tag_filter.tag_id', tag);
+    }
+
+    if (allowCampaign !== undefined) {
+      query = query.eq('allow_campaign', allowCampaign);
     }
 
     query = query
@@ -110,6 +122,14 @@ export async function POST(request: Request) {
       return fail('bad_request', "'phone' is required", 400);
     }
 
+    let allowCampaign: boolean | undefined;
+    if ('allow_campaign' in body) {
+      if (typeof body.allow_campaign !== 'boolean') {
+        return fail('bad_request', "'allow_campaign' must be a boolean", 400);
+      }
+      allowCampaign = body.allow_campaign;
+    }
+
     const auditUserId = await resolveAuditUserId(ctx.supabase, ctx.accountId);
 
     const { id, created } = await findOrCreateContact(
@@ -121,8 +141,24 @@ export async function POST(request: Request) {
         name: typeof body.name === 'string' ? body.name : undefined,
         email: typeof body.email === 'string' ? body.email : undefined,
         company: typeof body.company === 'string' ? body.company : undefined,
+        allow_campaign: allowCampaign,
       }
     );
+
+    // Find-or-create: an EXISTING contact keeps its fields, except an
+    // explicit allow_campaign, which is applied — callers sync opt-outs
+    // by phone through this endpoint, so it must not be ignored.
+    if (!created && allowCampaign !== undefined) {
+      const { error } = await ctx.supabase
+        .from('contacts')
+        .update({ allow_campaign: allowCampaign, updated_at: new Date().toISOString() })
+        .eq('id', id)
+        .eq('account_id', ctx.accountId);
+      if (error) {
+        console.error('[api/v1/contacts] allow_campaign update error:', error);
+        return fail('internal', 'Failed to update contact', 500);
+      }
+    }
 
     if (Array.isArray(body.tags)) {
       await setContactTags(

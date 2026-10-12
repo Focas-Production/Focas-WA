@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
+import { selectAll } from '@/lib/supabase/select-all';
 import { Contact, CustomField, Tag } from '@/types';
 import { Button } from '@/components/ui/button';
 import {
@@ -15,6 +16,7 @@ import {
   ArrowLeft,
   Search,
   X,
+  BellOff,
 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
@@ -172,6 +174,9 @@ export function Step2SelectAudience({
   const [loadingFields, setLoadingFields] = useState(false);
   const [estimatedCount, setEstimatedCount] = useState<number | null>(null);
   const [loadingCount, setLoadingCount] = useState(false);
+  // Audience contacts who opted out of campaigns (allow_campaign =
+  // false) — the launch skips them, so the estimate leaves them out.
+  const [optedOutCount, setOptedOutCount] = useState(0);
 
   // "Select Contacts" picker state
   const [contactSearch, setContactSearch] = useState('');
@@ -321,13 +326,29 @@ export function Step2SelectAudience({
         audience.csvContacts &&
         audience.csvContacts.length > 0
       ) {
+        // Opted-out numbers in the file are only known after the
+        // launch matches them to contacts; it skips them then.
         setEstimatedCount(audience.csvContacts.length);
+        setOptedOutCount(0);
         return;
       } else {
         // Partially-configured audience — wait for the user to finish.
         setEstimatedCount(null);
+        setOptedOutCount(0);
         return;
       }
+
+      // Opted-out contacts are few, so load their ids (paged) once and
+      // subtract them, rather than filtering every query above.
+      const optedOutRows = await selectAll<{ id: string }>((from, to) =>
+        supabase
+          .from('contacts')
+          .select('id')
+          .eq('allow_campaign', false)
+          .order('id')
+          .range(from, to),
+      ).catch(() => [] as { id: string }[]);
+      const optedOutSet = new Set(optedOutRows.map((r) => r.id));
 
       // Apply exclude tags
       let excludeSet: Set<string> | null = null;
@@ -340,17 +361,25 @@ export function Step2SelectAudience({
       }
 
       if (baseIds) {
-        const effective = [...baseIds].filter(
-          (id) => !excludeSet?.has(id),
-        );
+        const notExcluded = [...baseIds].filter((id) => !excludeSet?.has(id));
+        const effective = notExcluded.filter((id) => !optedOutSet.has(id));
         setEstimatedCount(effective.length);
+        setOptedOutCount(notExcluded.length - effective.length);
       } else {
-        // "All" — fetch the total, then subtract exclude set if any.
+        // "All" — count the opted-in contacts, then subtract the
+        // (opted-in) members of the exclude set.
         const { count } = await supabase
           .from('contacts')
-          .select('*', { count: 'exact', head: true });
+          .select('*', { count: 'exact', head: true })
+          .eq('allow_campaign', true);
         const total = count ?? 0;
-        setEstimatedCount(excludeSet ? Math.max(0, total - excludeSet.size) : total);
+        const excludedAllowed = excludeSet
+          ? [...excludeSet].filter((id) => !optedOutSet.has(id)).length
+          : 0;
+        setEstimatedCount(Math.max(0, total - excludedAllowed));
+        setOptedOutCount(
+          [...optedOutSet].filter((id) => !excludeSet?.has(id)).length,
+        );
       }
     } finally {
       setLoadingCount(false);
@@ -665,6 +694,12 @@ export function Step2SelectAudience({
                           </span>
                         )}
                       </span>
+                      {contact.allow_campaign === false && (
+                        <span className="inline-flex shrink-0 items-center gap-1 text-[10px] text-red-400">
+                          <BellOff className="h-3 w-3" />
+                          {t('selectAudience.optedOutBadge')}
+                        </span>
+                      )}
                     </button>
                   );
                 })}
@@ -862,7 +897,14 @@ export function Step2SelectAudience({
             </span>
             <span className="text-xs text-muted-foreground">estimated recipients</span>
           </div>
-        ) : (
+        ) : null}
+        {!loadingCount && estimatedCount !== null && optedOutCount > 0 && (
+          <div className="mt-1.5 flex items-center gap-2 text-xs text-muted-foreground">
+            <BellOff className="h-3.5 w-3.5 text-red-400" />
+            {t('selectAudience.optedOutSkipped', { count: optedOutCount })}
+          </div>
+        )}
+        {!loadingCount && estimatedCount === null && (
           <p className="text-xs text-muted-foreground">
             Select an audience type to see the estimate.
           </p>

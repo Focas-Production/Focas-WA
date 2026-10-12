@@ -19,7 +19,12 @@
 //
 // Response (202):
 //   { "data": { "broadcast_id", "status": "sending",
-//               "total_recipients", "accepted", "rejected" } }
+//               "total_recipients", "accepted", "rejected",
+//               "opted_out" } }
+//
+// Contacts with allow_campaign = false are skipped and counted in
+// `opted_out`; if every recipient opted out the request is a 400
+// (`all_opted_out`) and nothing is created.
 // ============================================================
 
 import { after } from 'next/server';
@@ -86,6 +91,7 @@ export async function POST(request: Request) {
         total_recipients: plan.planned.length,
         accepted: plan.planned.length,
         rejected: plan.rejected,
+        opted_out: plan.optedOut,
       },
       202
     );

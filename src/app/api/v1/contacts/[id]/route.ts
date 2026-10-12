@@ -5,7 +5,9 @@
 // Both are account-scoped: a contact belonging to another account
 // returns 404 (never 403 — don't reveal it exists elsewhere).
 // PATCH updates only the fields present in the body; pass `tags` (an
-// array of tag names) to replace the contact's tags.
+// array of tag names) to replace the contact's tags, and
+// `allow_campaign`, `allow_api_templates`, `allow_automation_templates`
+// (booleans) to change the contact's messaging permissions.
 // ============================================================
 
 import { requireApiKey } from '@/lib/auth/api-context';
@@ -65,6 +67,17 @@ export async function PATCH(
       } else {
         return fail('bad_request', `'${field}' must be a string or null`, 400);
       }
+    }
+    for (const flag of [
+      'allow_campaign',
+      'allow_api_templates',
+      'allow_automation_templates',
+    ] as const) {
+      if (!(flag in body)) continue;
+      if (typeof body[flag] !== 'boolean') {
+        return fail('bad_request', `'${flag}' must be a boolean`, 400);
+      }
+      updates[flag] = body[flag];
     }
 
     if (Object.keys(updates).length > 0) {

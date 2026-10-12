@@ -298,3 +298,43 @@ describe('SendMessageError', () => {
     expect(e).toBeInstanceOf(Error);
   });
 });
+
+describe('sendMessageToConversation — allow_api_templates (migration 048)', () => {
+  const blockedDb = () =>
+    fakeDb({
+      conversations: {
+        id: 'cv-1',
+        contact: { id: 'ct-1', phone: '+917305504500', allow_api_templates: false },
+      },
+    });
+  const params = {
+    conversationId: 'cv-1',
+    messageType: 'template',
+    templateName: 'promo',
+  } as const;
+
+  it('refuses API and Shopify template sends with 403 before charging', async () => {
+    walletMocks.chargeTemplateSend.mockClear();
+    metaMocks.sendTemplateMessage.mockClear();
+    for (const source of ['api', 'shopify'] as const) {
+      const err = await sendMessageToConversation(blockedDb(), 'acct-1', {
+        ...params,
+        chargeSource: { source },
+      }).catch((e) => e);
+      expect(err).toBeInstanceOf(SendMessageError);
+      expect(err.code).toBe('contact_opted_out');
+      expect(err.status).toBe(403);
+    }
+    expect(walletMocks.chargeTemplateSend).not.toHaveBeenCalled();
+    expect(metaMocks.sendTemplateMessage).not.toHaveBeenCalled();
+  });
+
+  it('does not block inbox template sends', async () => {
+    const err = await sendMessageToConversation(blockedDb(), 'acct-1', {
+      ...params,
+      chargeSource: { source: 'inbox' },
+    }).catch((e) => e);
+    // Gets past the permission check — fails later on the missing config.
+    expect(err.code).toBe('whatsapp_not_configured');
+  });
+});

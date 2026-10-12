@@ -129,8 +129,13 @@ export class WacrmClient {
     cursor?: string;
     search?: string;
     tag?: string;
+    allow_campaign?: boolean;
   }): Promise<Paginated<unknown>> {
-    return this.list('/contacts', query);
+    const { allow_campaign, ...rest } = query;
+    return this.list('/contacts', {
+      ...rest,
+      allow_campaign: allow_campaign === undefined ? undefined : String(allow_campaign),
+    });
   }
 
   getContact(id: string): Promise<{ data: unknown }> {

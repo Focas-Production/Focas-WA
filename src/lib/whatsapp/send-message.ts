@@ -22,6 +22,10 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import {
+  canReceiveApiTemplate,
+  API_TEMPLATES_BLOCKED_MESSAGE,
+} from '@/lib/contacts/campaign-consent';
+import {
   sendTextMessage,
   sendTemplateMessage,
   sendMediaMessage,
@@ -257,6 +261,17 @@ export async function sendMessageToConversation(
       'Contact phone number not found',
       400
     );
+  }
+
+  // Per-contact permission for integration-sent templates (migration
+  // 048). Checked before the wallet debit and the Meta call. Inbox
+  // sends (a person on the team chose to send) are never blocked.
+  if (
+    messageType === 'template' &&
+    (chargeSource.source === 'api' || chargeSource.source === 'shopify') &&
+    !canReceiveApiTemplate(contact)
+  ) {
+    throw new SendMessageError('contact_opted_out', API_TEMPLATES_BLOCKED_MESSAGE, 403);
   }
 
   const sanitizedPhone = sanitizePhoneForMeta(contact.phone);

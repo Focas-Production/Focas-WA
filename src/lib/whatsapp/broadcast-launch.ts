@@ -8,8 +8,10 @@
 //   1. resolve the audience (all / picked contacts / tags / custom
 //      field / CSV, minus exclude tags), paging every query — a plain
 //      select is silently capped at 1,000 rows by PostgREST;
-//   2. de-duplicate by normalized phone, so one person never gets the
-//      campaign twice (and never trips Meta's pair rate limit);
+//   2. drop contacts who opted out of campaigns (allow_campaign =
+//      false, migration 047), then de-duplicate by normalized phone,
+//      so one person never gets the campaign twice (and never trips
+//      Meta's pair rate limit);
 //   3. write the broadcasts row + one pending broadcast_recipients row
 //      per contact, and prepay the wallet as ONE campaign debit;
 //   4. hand the row to the engine as 'scheduled' (at now, or the
@@ -23,6 +25,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import type { Contact } from '@/types';
+import { canReceiveCampaign } from '@/lib/contacts/campaign-consent';
 import { normalizePhone } from '@/lib/whatsapp/phone-utils';
 import type { VariableMapping } from '@/lib/whatsapp/variable-resolution';
 import { selectAll, selectByChunks } from '@/lib/supabase/select-all';
@@ -69,6 +72,8 @@ export interface LaunchInput {
 export interface LaunchResult {
   broadcastId: string;
   totalRecipients: number;
+  /** Audience contacts skipped because they opted out of campaigns. */
+  optedOut: number;
   /** When the engine may start: now for "Send now". */
   scheduledAt: string;
   /** True when scheduledAt is in the future (cron delivers it). */
@@ -186,13 +191,20 @@ async function upsertCsvContacts(
     .filter((c): c is Contact => Boolean(c));
 }
 
+export interface ResolvedAudience {
+  /** Contacts to send to: opted-out removed, one per phone number. */
+  contacts: Contact[];
+  /** Contacts the audience matched but who opted out of campaigns. */
+  optedOut: number;
+}
+
 /** Resolve an audience to contacts. Every query is paged. */
 export async function resolveAudience(
   supabase: SupabaseClient,
   accountId: string,
   userId: string,
   audience: AudienceConfig,
-): Promise<Contact[]> {
+): Promise<ResolvedAudience> {
   let contacts: Contact[] = [];
   try {
     if (audience.type === 'all') {
@@ -230,15 +242,22 @@ export async function resolveAudience(
     );
   }
 
+  // Campaign opt-out applies to every audience type, CSV included: a
+  // number in an uploaded file that matches an opted-out contact is
+  // still skipped.
+  const allowed = contacts.filter(canReceiveCampaign);
+  const optedOut = contacts.length - allowed.length;
+
   // One recipient per phone number: two contacts sharing a number
   // would otherwise get the campaign twice.
   const seen = new Set<string>();
-  return contacts.filter((c) => {
+  const unique = allowed.filter((c) => {
     const key = normalizePhone(c.phone ?? '') || `id:${c.id}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   });
+  return { contacts: unique, optedOut };
 }
 
 /**
@@ -264,14 +283,19 @@ export async function launchBroadcast(
   }
   const isScheduled = scheduledAt.getTime() > Date.now();
 
-  const contacts = await resolveAudience(
+  const { contacts, optedOut } = await resolveAudience(
     supabase,
     ctx.accountId,
     ctx.userId,
     input.audience,
   );
   if (contacts.length === 0) {
-    throw new LaunchError('No contacts found for this audience.', 400);
+    throw new LaunchError(
+      optedOut > 0
+        ? `All ${optedOut} contact(s) in this audience have opted out of campaigns.`
+        : 'No contacts found for this audience.',
+      400,
+    );
   }
 
   const { data: broadcast, error: insertErr } = await supabase
@@ -388,6 +412,7 @@ export async function launchBroadcast(
   return {
     broadcastId,
     totalRecipients: contacts.length,
+    optedOut,
     scheduledAt: scheduledAt.toISOString(),
     isScheduled,
   };

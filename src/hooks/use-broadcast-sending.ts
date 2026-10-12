@@ -33,6 +33,8 @@ interface BroadcastPayload {
 export interface LaunchedBroadcast {
   broadcastId: string;
   totalRecipients: number;
+  /** Audience contacts skipped because they opted out of campaigns. */
+  optedOut: number;
   /**
    * Set when the audience is larger than the WhatsApp number's
    * 24-hour unique-user messaging limit — sends past it will fail.
@@ -85,6 +87,7 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
       return {
         broadcastId: data.broadcast_id,
         totalRecipients: data.total_recipients,
+        optedOut: data.opted_out ?? 0,
         messagingLimit: data.messaging_limit,
       };
     } finally {

@@ -25,6 +25,12 @@ export interface ApiContact {
   email: string | null;
   company: string | null;
   avatar_url: string | null;
+  /** Campaign opt-in; false = skipped by every broadcast. */
+  allow_campaign: boolean;
+  /** false = template sends via the API / Shopify are refused. */
+  allow_api_templates: boolean;
+  /** false = template sends by automations are refused. */
+  allow_automation_templates: boolean;
   tags: { id: string; name: string; color: string }[];
   created_at: string;
   updated_at: string;
@@ -52,6 +58,9 @@ export function serializeContact(row: Record<string, unknown>): ApiContact {
     email: (row.email as string | null) ?? null,
     company: (row.company as string | null) ?? null,
     avatar_url: (row.avatar_url as string | null) ?? null,
+    allow_campaign: row.allow_campaign !== false,
+    allow_api_templates: row.allow_api_templates !== false,
+    allow_automation_templates: row.allow_automation_templates !== false,
     tags: joins
       .map((j) => j.tags)
       .filter((t): t is NonNullable<RawTagJoin['tags']> => t != null)
@@ -100,6 +109,9 @@ export interface ContactInput {
   name?: string | null;
   email?: string | null;
   company?: string | null;
+  /** Only applied when the contact is CREATED; use PATCH to change an
+   *  existing contact's flag. Omitted = the column default (true). */
+  allow_campaign?: boolean;
 }
 
 /**
@@ -134,6 +146,9 @@ export async function findOrCreateContact(
       name: input.name ?? sanitized,
       email: input.email ?? null,
       company: input.company ?? null,
+      ...(input.allow_campaign === undefined
+        ? {}
+        : { allow_campaign: input.allow_campaign }),
     })
     .select('id')
     .single();

@@ -29,6 +29,8 @@ import {
 import { isMessageTemplate } from '@/lib/whatsapp/template-row-guard';
 import type { MessageTemplate } from '@/types';
 import { findOrCreateContact } from '@/lib/api/v1/contacts';
+import { canReceiveCampaign } from '@/lib/contacts/campaign-consent';
+import { selectByChunks } from '@/lib/supabase/select-all';
 import {
   getTemplateCharge,
   chargeTemplateSend,
@@ -80,6 +82,8 @@ export interface BroadcastPlan {
   planned: PlannedRecipient[];
   /** Phones rejected up front (invalid E.164) — counted as failed. */
   rejected: number;
+  /** Recipients skipped because the contact opted out of campaigns. */
+  optedOut: number;
 }
 
 const MAX_RECIPIENTS = 1000;
@@ -193,6 +197,36 @@ export async function createBroadcast(
     );
   }
 
+  // Campaign opt-out (contacts.allow_campaign, migration 047): skip
+  // contacts who switched campaigns off. Newly created contacts default
+  // to allowed, so only existing opt-outs are dropped here.
+  let optedOutIds: Set<string>;
+  try {
+    const rows = await selectByChunks<{ id: string; allow_campaign: boolean | null }>(
+      deduped.map((r) => r.contactId),
+      (chunk) =>
+        db
+          .from('contacts')
+          .select('id, allow_campaign')
+          .eq('account_id', accountId)
+          .in('id', chunk)
+    );
+    optedOutIds = new Set(rows.filter((r) => !canReceiveCampaign(r)).map((r) => r.id));
+  } catch (err) {
+    console.error('[broadcast-core] opt-out lookup error:', err);
+    throw new BroadcastError('internal', 'Failed to create broadcast', 500);
+  }
+  const eligible = deduped.filter((r) => !optedOutIds.has(r.contactId));
+  const optedOut = deduped.length - eligible.length;
+
+  if (eligible.length === 0) {
+    throw new BroadcastError(
+      'all_opted_out',
+      'Every recipient has opted out of campaigns (allow_campaign is false)',
+      400
+    );
+  }
+
   // Persist the broadcast + its recipients. The count columns
   // (sent/delivered/read/replied/failed) are owned by the DB aggregate
   // trigger (migrations 003/005) and derived purely from
@@ -210,7 +244,7 @@ export async function createBroadcast(
       template_name: templateName,
       template_language: templateLanguage,
       status: 'sending',
-      total_recipients: deduped.length,
+      total_recipients: eligible.length,
     })
     .select('id')
     .single();
@@ -222,7 +256,7 @@ export async function createBroadcast(
   const { data: recipientRows, error: rErr } = await db
     .from('broadcast_recipients')
     .insert(
-      deduped.map((r) => ({
+      eligible.map((r) => ({
         broadcast_id: broadcast.id,
         contact_id: r.contactId,
         status: 'pending' as const,
@@ -236,7 +270,7 @@ export async function createBroadcast(
 
   // Pair each inserted recipient row back to its phone/params by
   // contact_id — unambiguous now that duplicates are collapsed.
-  const byContact = new Map(deduped.map((r) => [r.contactId, r]));
+  const byContact = new Map(eligible.map((r) => [r.contactId, r]));
   const planned: PlannedRecipient[] = recipientRows.map((row) => {
     const r = byContact.get(row.contact_id as string)!;
     return { recipientRowId: row.id as string, phone: r.phone, params: r.params };
@@ -252,6 +286,7 @@ export async function createBroadcast(
     templateRow,
     planned,
     rejected,
+    optedOut,
   };
 }
 

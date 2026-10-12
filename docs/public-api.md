@@ -193,7 +193,7 @@ semantics: soft failures return 200 with `{ "shown": false, "reason":
 
 List contacts, newest first. Scope: `contacts:read`. Paginated (see
 [Pagination](#pagination)). Optional filters: `?search=` (matches name
-or phone) and `?tag=<tagId>`.
+or phone), `?tag=<tagId>`, and `?allow_campaign=true|false`.
 
 ```json
 {
@@ -201,6 +201,8 @@ or phone) and `?tag=<tagId>`.
     {
       "id": "…", "phone": "+14155550123", "name": "Jane Doe",
       "email": null, "company": "Acme", "avatar_url": null,
+      "allow_campaign": true, "allow_api_templates": true,
+      "allow_automation_templates": true,
       "tags": [{ "id": "…", "name": "vip", "color": "#3b82f6" }],
       "created_at": "…", "updated_at": "…"
     }
@@ -218,12 +220,43 @@ match returns `200` with the existing contact; a new contact returns
 `201`. The response body is the serialized contact (same shape as the
 list rows above).
 
+`allow_campaign` (boolean, optional) sets the contact's campaign
+opt-in. Unlike the other fields it is applied to an **existing** contact
+too, so you can sync opt-outs by phone with this endpoint.
+
 ### `GET` / `PATCH /api/v1/contacts/{id}`
 
 Read or update one contact. Scopes: `contacts:read` / `contacts:write`.
-`PATCH` updates only the fields you send (`name`, `email`, `company`);
-pass `tags` (an array of tag names) to replace the contact's tags. A
-contact in another account returns `404`.
+`PATCH` updates only the fields you send (`name`, `email`, `company`,
+`allow_campaign`, `allow_api_templates`, `allow_automation_templates`); pass `tags` (an array of tag names) to replace the
+contact's tags. A contact in another account returns `404`.
+
+### Campaign opt-out (`allow_campaign`)
+
+Every contact has `allow_campaign`, `true` by default. Set it to
+`false` to exclude that contact from **every broadcast campaign** —
+dashboard campaigns (including scheduled ones that were queued before
+the opt-out) and `POST /api/v1/broadcasts`. One-to-one sends
+(`POST /api/v1/messages`, inbox, automations, flows) are not affected.
+
+```bash
+curl -X PATCH https://your-crm.example.com/api/v1/contacts/{id} \
+  -H "Authorization: Bearer wacrm_live_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{ "allow_campaign": false }'
+```
+
+### Template permissions (`allow_api_templates`, `allow_automation_templates`)
+
+Two more per-contact switches, both `true` by default:
+
+| Field                        | When `false`                                                                 |
+| ---------------------------- | ---------------------------------------------------------------------------- |
+| `allow_api_templates`        | `POST /api/v1/messages` with `type: "template"` (and Shopify order notifications) to this contact fail with `403 contact_opted_out`. Nothing is charged. |
+| `allow_automation_templates` | Automation steps that send a template to this contact fail (shown in the automation's logs). Nothing is charged. |
+
+Free-form messages inside the 24-hour window, manual sends from the
+inbox, and system messages are not affected.
 
 ### `GET /api/v1/conversations`
 
@@ -267,8 +300,10 @@ curl -X POST https://your-crm.example.com/api/v1/broadcasts \
 ```
 
 Recipients are capped at **1000 per request** — split larger sends.
-Invalid phone numbers are dropped and counted as `rejected`. Response
-(202):
+Invalid phone numbers are dropped and counted as `rejected`; contacts
+with `allow_campaign: false` are skipped and counted as `opted_out` (if
+every recipient opted out the call returns `400 all_opted_out`).
+Response (202):
 
 ```json
 {
@@ -277,7 +312,8 @@ Invalid phone numbers are dropped and counted as `rejected`. Response
     "status": "sending",
     "total_recipients": 2,
     "accepted": 2,
-    "rejected": 0
+    "rejected": 0,
+    "opted_out": 0
   }
 }
 ```

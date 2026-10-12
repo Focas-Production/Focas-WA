@@ -108,6 +108,16 @@ export interface Contact {
   email?: string;
   company?: string;
   avatar_url?: string;
+  /** Campaign opt-in (migration 047). TRUE by default; FALSE excludes
+   *  the contact from every broadcast. One-to-one sends are unaffected.
+   *  Treat a missing value as TRUE (see canReceiveCampaign). */
+  allow_campaign?: boolean;
+  /** When `allow_campaign` last changed (set by a DB trigger). */
+  allow_campaign_updated_at?: string | null;
+  /** Templates via the public API / Shopify (migration 048). TRUE by default. */
+  allow_api_templates?: boolean;
+  /** Templates sent by automation rules (migration 048). TRUE by default. */
+  allow_automation_templates?: boolean;
   created_at: string;
   updated_at: string;
   /** Hydrated by queries that embed `contact_tags(tags(*))` (e.g. the

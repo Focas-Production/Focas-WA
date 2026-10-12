@@ -12,6 +12,10 @@ import {
   isRecipientNotAllowedError,
 } from '@/lib/whatsapp/phone-utils'
 import { supabaseAdmin } from './admin-client'
+import {
+  canReceiveAutomationTemplate,
+  AUTOMATION_TEMPLATES_BLOCKED_MESSAGE,
+} from '@/lib/contacts/campaign-consent'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import {
   getTemplateCharge,
@@ -127,12 +131,18 @@ async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: str
   // new tenancy column.
   const { data: contact, error: contactErr } = await db
     .from('contacts')
-    .select('id, phone')
+    .select('id, phone, allow_automation_templates')
     .eq('id', input.contactId)
     .eq('account_id', input.accountId)
     .maybeSingle()
   if (contactErr || !contact?.phone) {
     throw new Error('contact not found for this account')
+  }
+
+  // Per-contact switch (migration 048): fails this step before the
+  // wallet debit; the engine logs the reason on the run.
+  if (input.kind === 'template' && !canReceiveAutomationTemplate(contact)) {
+    throw new Error(AUTOMATION_TEMPLATES_BLOCKED_MESSAGE)
   }
 
   const sanitized = sanitizePhoneForMeta(contact.phone)
