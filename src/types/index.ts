@@ -602,6 +602,9 @@ export interface ConditionStepConfig {
   operand?: string;
   /** For contact_field equals / message_content contains — comparison value */
   value?: string;
+  /** time_of_day only: IANA zone the window is read in (e.g. "Asia/Kolkata").
+   *  Unset on conditions saved before this existed → server clock. */
+  timezone?: string;
 }
 
 export interface SendWebhookStepConfig {

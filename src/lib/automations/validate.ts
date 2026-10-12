@@ -1,5 +1,6 @@
 import type { AutomationTriggerType } from '@/types'
 import { validateInteractivePayload } from '@/lib/whatsapp/interactive'
+import { isValidTimeZone } from '@/lib/automations/time-of-day'
 
 // ------------------------------------------------------------
 // Pre-flight config validation for automations about to be activated.
@@ -124,6 +125,9 @@ function validateOne(step: StepLike, path: string, issues: ValidationIssue[]): v
       }
       if (!nonEmpty(c.operand)) {
         issues.push({ path: `${path}.operand`, message: 'condition operand is required' })
+      }
+      if (nonEmpty(c.timezone) && !isValidTimeZone(String(c.timezone))) {
+        issues.push({ path: `${path}.timezone`, message: 'condition timezone is not a valid timezone' })
       }
       break
     case 'send_webhook':

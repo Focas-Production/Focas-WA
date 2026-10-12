@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation"
 
 import {
   AutomationBuilder,
+  browserTimeZone,
   type BuilderInitial,
   type BuilderStep,
 } from "@/components/automations/automation-builder"
@@ -33,7 +34,7 @@ function NewAutomationPageInner() {
         t.steps.map((seed, idx) => ({
           index: idx,
           step_type: seed.step_type,
-          step_config: seed.step_config as Record<string, unknown>,
+          step_config: withBrowserTimeZone(seed.step_config as Record<string, unknown>),
           branch: seed.branch ?? null,
           parent_index: seed.parent_index ?? null,
         })),
@@ -58,6 +59,14 @@ function NewAutomationPageInner() {
   }, [template])
 
   return <AutomationBuilder initial={initial} />
+}
+
+/** Template time-of-day conditions (e.g. Out of Office) are written in
+ *  local hours; pin them to the author's zone instead of the server clock. */
+function withBrowserTimeZone(cfg: Record<string, unknown>): Record<string, unknown> {
+  if (cfg.subject !== "time_of_day" || cfg.timezone) return cfg
+  const timezone = browserTimeZone()
+  return timezone ? { ...cfg, timezone } : cfg
 }
 
 interface SeedRow {

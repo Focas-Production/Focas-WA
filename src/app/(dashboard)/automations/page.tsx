@@ -1,12 +1,11 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import {
   Zap,
   Plus,
-  MoreVertical,
   Copy,
   Pencil,
   Trash2,
@@ -16,22 +15,18 @@ import {
   Users,
   PhoneCall,
   Loader2,
+  Search,
+  ChevronRight,
 } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/client"
 import { useCan } from "@/hooks/use-can"
 import { useTranslations } from "next-intl"
-import type { Automation } from "@/types"
+import type { Automation, AutomationStepType, KeywordMatchTriggerConfig } from "@/types"
 import { Button } from "@/components/ui/button"
 import { GatedButton } from "@/components/ui/gated-button"
+import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
 import {
   Dialog,
   DialogContent,
@@ -41,7 +36,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { AUTOMATION_TEMPLATES, type TemplateSlug } from "@/lib/automations/templates"
-import { triggerMeta, formatRelative } from "@/lib/automations/trigger-meta"
+import { formatRelative } from "@/lib/automations/trigger-meta"
+import {
+  STEP_META,
+  TRIGGER_ICON,
+  TRIGGER_ICON_CLASS,
+  stepIconClass,
+} from "@/lib/automations/step-meta"
 import { cn } from "@/lib/utils"
 
 const TEMPLATE_ORDER: TemplateSlug[] = [
@@ -58,13 +59,27 @@ const TEMPLATE_ICON: Record<TemplateSlug, typeof Zap> = {
   follow_up_reminder: PhoneCall,
 }
 
+/** List row: the automation plus its steps (only what the "Then" column
+ *  needs), embedded via the automation_steps FK. */
+type AutomationRow = Automation & {
+  automation_steps?: {
+    step_type: AutomationStepType
+    position: number
+    parent_step_id: string | null
+  }[]
+}
+
+type StatusFilter = "all" | "on" | "off"
+
 export default function AutomationsPage() {
   const router = useRouter()
   const canCreate = useCan("send-messages")
   const t = useTranslations("Automations.list")
-  const [automations, setAutomations] = useState<Automation[] | null>(null)
+  const [automations, setAutomations] = useState<AutomationRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [pendingDelete, setPendingDelete] = useState<Automation | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<AutomationRow | null>(null)
+  const [query, setQuery] = useState("")
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all")
   const [deleting, setDeleting] = useState(false)
 
   async function load() {
@@ -72,10 +87,10 @@ export default function AutomationsPage() {
       const supabase = createClient()
       const { data, error: fetchErr } = await supabase
         .from("automations")
-        .select("*")
+        .select("*, automation_steps(step_type, position, parent_step_id)")
         .order("created_at", { ascending: false })
       if (fetchErr) throw fetchErr
-      setAutomations((data ?? []) as Automation[])
+      setAutomations((data ?? []) as AutomationRow[])
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load automations")
     }
@@ -85,7 +100,20 @@ export default function AutomationsPage() {
     load()
   }, [])
 
-  async function toggleActive(a: Automation, next: boolean) {
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return (automations ?? []).filter((a) => {
+      if (statusFilter === "on" && !a.is_active) return false
+      if (statusFilter === "off" && a.is_active) return false
+      if (!q) return true
+      return (
+        a.name.toLowerCase().includes(q) ||
+        (a.description ?? "").toLowerCase().includes(q)
+      )
+    })
+  }, [automations, query, statusFilter])
+
+  async function toggleActive(a: AutomationRow, next: boolean) {
     // Optimistic flip so the switch feels instant.
     setAutomations((prev) =>
       prev?.map((x) => (x.id === a.id ? { ...x, is_active: next } : x)) ?? prev,
@@ -107,7 +135,7 @@ export default function AutomationsPage() {
     toast.success(next ? t("toasts.activated") : t("toasts.paused"))
   }
 
-  async function duplicate(a: Automation) {
+  async function duplicate(a: AutomationRow) {
     const res = await fetch(`/api/automations/${a.id}/duplicate`, { method: "POST" })
     if (!res.ok) {
       const body = await res.json().catch(() => ({}))
@@ -214,20 +242,73 @@ export default function AutomationsPage() {
           </p>
         </div>
       ) : (
-        <ul className="space-y-3">
-          {automations.map((a) => (
-            <AutomationCard
-              key={a.id}
-              automation={a}
-              onToggle={(next) => toggleActive(a, next)}
-              onEdit={() => router.push(`/automations/${a.id}/edit`)}
-              onDuplicate={() => duplicate(a)}
-              onLogs={() => router.push(`/automations/${a.id}/logs`)}
-              onDelete={() => setPendingDelete(a)}
-              t={t}
-            />
-          ))}
-        </ul>
+        <section className="space-y-3">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="relative w-full sm:max-w-xs">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder={t("search")}
+                className="pl-8"
+              />
+            </div>
+            <div className="inline-flex self-start rounded-lg border border-border bg-card p-0.5 text-xs">
+              {(["all", "on", "off"] as const).map((f) => (
+                <button
+                  key={f}
+                  type="button"
+                  onClick={() => setStatusFilter(f)}
+                  className={cn(
+                    "rounded-md px-3 py-1 font-medium transition-colors",
+                    statusFilter === f
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {f === "all" ? t("filterAll") : f === "on" ? t("filterOn") : t("filterOff")}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="overflow-x-auto rounded-xl border border-border bg-card">
+            <table className="w-full min-w-[880px] text-sm">
+              <thead>
+                <tr className="border-b border-border text-left text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  <th className="px-4 py-3">{t("colName")}</th>
+                  <th className="px-4 py-3">{t("colTrigger")}</th>
+                  <th className="px-4 py-3">{t("colActions")}</th>
+                  <th className="px-4 py-3">{t("colStatus")}</th>
+                  <th className="px-4 py-3 text-right">{t("colExecuted")}</th>
+                  <th className="px-4 py-3">{t("colLastRun")}</th>
+                  <th className="px-4 py-3 text-right">{t("colRowActions")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visible.map((a) => (
+                  <AutomationRowView
+                    key={a.id}
+                    automation={a}
+                    onToggle={(next) => toggleActive(a, next)}
+                    onEdit={() => router.push(`/automations/${a.id}/edit`)}
+                    onDuplicate={() => duplicate(a)}
+                    onLogs={() => router.push(`/automations/${a.id}/logs`)}
+                    onDelete={() => setPendingDelete(a)}
+                    t={t}
+                  />
+                ))}
+                {visible.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                      {t("noResults")}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
       )}
 
       <Dialog open={!!pendingDelete} onOpenChange={(v) => !v && setPendingDelete(null)}>
@@ -261,7 +342,7 @@ export default function AutomationsPage() {
   )
 }
 
-function AutomationCard({
+function AutomationRowView({
   automation,
   onToggle,
   onEdit,
@@ -270,7 +351,7 @@ function AutomationCard({
   onDelete,
   t,
 }: {
-  automation: Automation
+  automation: AutomationRow
   onToggle: (next: boolean) => void
   onEdit: () => void
   onDuplicate: () => void
@@ -278,91 +359,129 @@ function AutomationCard({
   onDelete: () => void
   t: ReturnType<typeof useTranslations>
 }) {
-  const meta = triggerMeta(automation.trigger_type)
-  return (
-    <li className="rounded-xl border border-border bg-card transition-colors hover:border-border">
-      <div className="flex items-center gap-4 p-4">
-        <div
-          className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-primary/10"
-          aria-hidden
-        >
-          <Zap className="h-5 w-5 text-primary" />
-        </div>
+  const tb = useTranslations("Automations.builder")
+  const TriggerIcon = TRIGGER_ICON[automation.trigger_type] ?? Zap
+  const keywords =
+    automation.trigger_type === "keyword_match"
+      ? ((automation.trigger_config as Partial<KeywordMatchTriggerConfig>).keywords ?? [])
+      : []
+  // Top-level steps in run order; branch children stay hidden here.
+  const steps = (automation.automation_steps ?? [])
+    .filter((s) => !s.parent_step_id)
+    .sort((x, y) => x.position - y.position)
+  const shown = steps.slice(0, 2)
+  const more = steps.length - shown.length
 
-        <button
-          type="button"
-          onClick={onEdit}
-          className="min-w-0 flex-1 text-left"
-        >
-          <div className="flex items-center gap-2">
-            <span className="truncate text-sm font-semibold text-foreground">
-              {automation.name}
+  const iconBtn =
+    "inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+
+  return (
+    <tr className="border-b border-border last:border-b-0 hover:bg-muted/40">
+      <td className="max-w-[240px] px-4 py-3 align-top">
+        <button type="button" onClick={onEdit} className="text-left">
+          <span className="block truncate font-semibold text-primary hover:underline">
+            {automation.name}
+          </span>
+          {automation.description && (
+            <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+              {automation.description}
             </span>
-            {automation.is_active && (
-              <span className="relative flex h-2 w-2" aria-label="active">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-75" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
-              </span>
+          )}
+        </button>
+      </td>
+      <td className="max-w-[260px] px-4 py-3 align-top">
+        <div className="flex items-start gap-2">
+          <span
+            className={cn("flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md", TRIGGER_ICON_CLASS)}
+            aria-hidden
+          >
+            <TriggerIcon className="h-3.5 w-3.5" />
+          </span>
+          <div className="min-w-0">
+            <div className="text-sm text-foreground">
+              {tb(`triggers.${automation.trigger_type}.label`)}
+            </div>
+            {keywords.length > 0 && (
+              <div className="truncate text-xs text-muted-foreground">
+                {keywords.map((k) => `“${k}”`).join(", ")}
+              </div>
             )}
           </div>
-          {automation.description && (
-            <p className="mt-0.5 truncate text-xs text-muted-foreground">{automation.description}</p>
-          )}
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <span
-              className={cn(
-                "inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium",
-                meta.pillClass,
-              )}
-            >
-              {meta.label}
-            </span>
-            <span className="tabular-nums">
-              {automation.execution_count === 1
-                ? t("runs", { count: automation.execution_count })
-                : t("runsPlural", { count: automation.execution_count })}
-            </span>
-            <span aria-hidden>·</span>
-            <span>{t("lastRun", { time: formatRelative(automation.last_executed_at) })}</span>
+        </div>
+      </td>
+      <td className="px-4 py-3 align-top">
+        {steps.length === 0 ? (
+          <span className="text-xs text-muted-foreground">{t("noActions")}</span>
+        ) : (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {shown.map((s, i) => {
+              const Icon = STEP_META[s.step_type]?.icon ?? Zap
+              return (
+                <span key={i} className="inline-flex items-center gap-1.5">
+                  {i > 0 && <ChevronRight className="h-3 w-3 text-muted-foreground" />}
+                  <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2 py-0.5 text-xs text-foreground">
+                    <span
+                      className={cn("flex h-4 w-4 items-center justify-center rounded", stepIconClass(s.step_type))}
+                      aria-hidden
+                    >
+                      <Icon className="h-3 w-3" />
+                    </span>
+                    {tb(`steps.${s.step_type}`)}
+                  </span>
+                </span>
+              )
+            })}
+            {more > 0 && (
+              <span className="text-xs text-muted-foreground">{t("moreSteps", { count: more })}</span>
+            )}
           </div>
-        </button>
-
-        <div className="flex items-center gap-3">
+        )}
+      </td>
+      <td className="px-4 py-3 align-top">
+        <div className="flex items-center gap-2">
           <Switch
             checked={automation.is_active}
             onCheckedChange={(v) => onToggle(!!v)}
             aria-label={automation.is_active ? t("deactivate") : t("activate")}
           />
-
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              aria-label="Open menu"
-              className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground data-[popup-open]:bg-muted"
-            >
-              <MoreVertical className="h-4 w-4" />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={onEdit}>
-                <Pencil className="h-4 w-4" />
-                {t("edit")}
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={onDuplicate}>
-                <Copy className="h-4 w-4" />
-                {t("duplicate")}
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={onLogs}>
-                <FileText className="h-4 w-4" />
-                {t("viewLogs")}
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem variant="destructive" onClick={onDelete}>
-                <Trash2 className="h-4 w-4" />
-                {t("delete")}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <span
+            className={cn(
+              "text-xs font-medium",
+              automation.is_active ? "text-primary" : "text-muted-foreground",
+            )}
+          >
+            {automation.is_active ? t("on") : t("off")}
+          </span>
         </div>
-      </div>
-    </li>
+      </td>
+      <td className="px-4 py-3 text-right align-top tabular-nums text-foreground">
+        {automation.execution_count}
+      </td>
+      <td className="whitespace-nowrap px-4 py-3 align-top text-xs text-muted-foreground">
+        {automation.last_executed_at ? formatRelative(automation.last_executed_at) : t("never")}
+      </td>
+      <td className="px-4 py-3 align-top">
+        <div className="flex items-center justify-end gap-0.5">
+          <button type="button" onClick={onEdit} className={iconBtn} title={t("edit")} aria-label={t("edit")}>
+            <Pencil className="h-4 w-4" />
+          </button>
+          <button type="button" onClick={onDuplicate} className={iconBtn} title={t("duplicate")} aria-label={t("duplicate")}>
+            <Copy className="h-4 w-4" />
+          </button>
+          <button type="button" onClick={onLogs} className={iconBtn} title={t("viewLogs")} aria-label={t("viewLogs")}>
+            <FileText className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={onDelete}
+            className={cn(iconBtn, "hover:bg-destructive/10 hover:text-destructive")}
+            title={t("delete")}
+            aria-label={t("delete")}
+          >
+            <Trash2 className="h-4 w-4" />
+          </button>
+        </div>
+      </td>
+    </tr>
   )
 }
