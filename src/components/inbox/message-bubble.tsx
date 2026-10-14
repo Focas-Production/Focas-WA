@@ -214,7 +214,13 @@ function MessageContent({ message, t }: { message: Message, t: ReturnType<typeof
       }
       return (
         <a
-          href={message.media_url}
+          // Proxy URLs take the filename so the file opens/saves with
+          // its real name and extension.
+          href={
+            message.media_url.startsWith("/api/whatsapp/media/") && message.content_text
+              ? `${message.media_url}?name=${encodeURIComponent(message.content_text)}`
+              : message.media_url
+          }
           target="_blank"
           rel="noopener noreferrer"
           className="flex items-center gap-2 rounded-lg bg-muted/50 px-3 py-2 text-sm hover:bg-muted"

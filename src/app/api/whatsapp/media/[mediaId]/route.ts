@@ -4,6 +4,33 @@ import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
 import { decrypt } from '@/lib/whatsapp/encryption'
 import { parseRange } from '@/lib/whatsapp/media-range'
 
+const EXT_BY_MIME: Record<string, string> = {
+  'application/pdf': 'pdf',
+  'application/msword': 'doc',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+  'application/vnd.ms-excel': 'xls',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+  'application/vnd.ms-powerpoint': 'ppt',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx',
+  'text/plain': 'txt',
+  'text/csv': 'csv',
+  'application/zip': 'zip',
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+  'video/mp4': 'mp4',
+  'audio/ogg': 'ogg',
+  'audio/mpeg': 'mp3',
+}
+
+/** Display name for the file, guaranteed to carry an extension when the MIME type is known. */
+function buildFilename(name: string | null, mediaId: string, mimeType: string): string {
+  const base = (name ?? '').replace(/[\/\\\r\n]/g, '_').trim().slice(0, 200) || `file-${mediaId}`
+  const ext = EXT_BY_MIME[mimeType.split(';')[0].trim().toLowerCase()]
+  if (!ext || base.toLowerCase().endsWith(`.${ext}`)) return base
+  return `${base}.${ext}`
+}
+
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ mediaId: string }> }
@@ -74,13 +101,35 @@ export async function GET(
       accessToken,
     })
 
+    // Meta's CDN often serves documents as a generic octet-stream; the
+    // media metadata carries the real MIME type. Without it (and a
+    // filename) the browser saves an extension-less file nobody can open.
+    const isGeneric = (t?: string) =>
+      !t || t.startsWith('application/octet-stream') || t.startsWith('binary/')
+    const resolvedType = !isGeneric(contentType)
+      ? contentType
+      : !isGeneric(mediaInfo.mimeType)
+        ? mediaInfo.mimeType
+        : 'application/octet-stream'
+
     const bytes = new Uint8Array(buffer)
     const headers: Record<string, string> = {
-      'Content-Type': contentType || mediaInfo.mimeType || 'application/octet-stream',
+      'Content-Type': resolvedType,
       // Private: the bytes are only reachable with this account's session.
       'Cache-Control': 'private, max-age=86400',
       'Accept-Ranges': 'bytes',
     }
+
+    const filename = buildFilename(
+      new URL(request.url).searchParams.get('name'),
+      mediaId,
+      resolvedType
+    )
+    // inline: PDFs/images open in the browser tab; anything the browser
+    // can't render is downloaded under this name instead.
+    headers['Content-Disposition'] =
+      `inline; filename="${filename.replace(/[^\x20-\x7e]|["\\]/g, '_')}"; ` +
+      `filename*=UTF-8''${encodeURIComponent(filename)}`
 
     // <audio>/<video> send Range requests to seek; answer them with 206
     // so scrubbing and duration work instead of a non-seekable stream.
