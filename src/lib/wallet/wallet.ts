@@ -31,6 +31,7 @@
 
 import { supabaseAdmin } from '@/lib/automations/admin-client'
 import { getMetaRatePaise } from './meta-rates'
+import { maybeSendLowBalanceAlert } from './low-balance-alert'
 
 export type WalletChargeCategory = 'marketing' | 'utility' | 'authentication'
 
@@ -142,6 +143,9 @@ export async function chargeTemplateSend(params: {
     }
     throw new WalletError('wallet_error', `Wallet charge failed: ${error.message}`)
   }
+  // Every debit funnels through here, so this is the one place a
+  // drop below the low-balance threshold can be caught. Never throws.
+  await maybeSendLowBalanceAlert(params.accountId)
 }
 
 /**

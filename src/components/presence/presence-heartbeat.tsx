@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 
 import { createClient } from "@/lib/supabase/client";
-import { useAuth } from "@/hooks/use-auth";
+import { expireSessionIfInvalid, useAuth } from "@/hooks/use-auth";
 import { HEARTBEAT_MS, IDLE_AFTER_MS, type StoredPresence } from "@/lib/presence";
 
 /**
@@ -63,6 +63,9 @@ export function PresenceHeartbeat() {
         // Non-fatal: presence is best-effort. Log once per failure so a
         // misconfigured RPC is visible without spamming.
         console.error("[PresenceHeartbeat] touch_presence failed:", error.message);
+        // A rejected JWT means the session died (e.g. revoked on another
+        // device) — check and bounce to /login rather than beat on.
+        void expireSessionIfInvalid();
       }
     };
 

@@ -2208,5 +2208,10 @@
       "reindexTooltip": "Re-embed all documents (e.g. after adding an embeddings key)",
       "loading": "Loading…"
     }
+  },
+  "WalletBanner": {
+    "message": "Wallet balance is {balance}, below {threshold}. Template messages stop sending when it runs out.",
+    "topUp": "Add money",
+    "dismiss": "Dismiss"
   }
 }

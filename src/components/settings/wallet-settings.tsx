@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import { useAuth } from '@/hooks/use-auth';
+import { expireSessionIfInvalid, useAuth } from '@/hooks/use-auth';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -338,6 +338,7 @@ export function WalletSettings() {
         body: JSON.stringify({ amount_paise: Math.round(rupees * 100) }),
       });
       const order = await res.json();
+      if (res.status === 401) void expireSessionIfInvalid();
       if (!res.ok) throw new Error(order.error || 'Failed to create order');
 
       await loadRazorpayScript();
@@ -413,6 +414,7 @@ export function WalletSettings() {
         }),
       });
       const data = await res.json();
+      if (res.status === 401) void expireSessionIfInvalid();
       if (!res.ok) throw new Error(data.error || t('manual.otpSendFailed'));
       setManualRequestId(data.request_id);
       setManualStep('code');
@@ -455,6 +457,7 @@ export function WalletSettings() {
         ),
       });
       const data = await res.json();
+      if (res.status === 401) void expireSessionIfInvalid();
       if (!res.ok) throw new Error(data.error || 'Manual credit failed');
       toast.success(t('manual.success'));
       resetManualDialog(false);

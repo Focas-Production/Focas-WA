@@ -2207,5 +2207,10 @@
       "reindexTooltip": "모든 문서를 다시 임베딩합니다 (예: 임베딩 키 추가 후)",
       "loading": "불러오는 중…"
     }
+  },
+  "WalletBanner": {
+    "message": "지갑 잔액이 {balance}로 {threshold} 미만입니다. 잔액이 소진되면 템플릿 메시지 발송이 중단됩니다.",
+    "topUp": "충전하기",
+    "dismiss": "닫기"
   }
 }

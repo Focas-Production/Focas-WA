@@ -106,6 +106,36 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+// Mirrors the middleware's protected list — a dead session on these
+// pages bounces to /login instead of leaving a zombie page whose every
+// call 401s.
+const PROTECTED_PATHS = [
+  "/dashboard",
+  "/inbox",
+  "/contacts",
+  "/pipelines",
+  "/broadcasts",
+  "/automations",
+  "/settings",
+];
+
+/**
+ * getSession() only reads the local cookie, so a session revoked
+ * server-side (sign-out-everywhere, password change, expired refresh
+ * token) still looks valid to the tab. Ask the auth server; if it
+ * rejects the session, drop it locally — that fires SIGNED_OUT, which
+ * the AuthProvider turns into a redirect to /login. Network failures
+ * (status 0 / undefined) are ignored so a flaky connection never logs
+ * anyone out. Call this after any API 401.
+ */
+export async function expireSessionIfInvalid(): Promise<void> {
+  const supabase = createClient();
+  const { error } = await supabase.auth.getUser();
+  if (error && (error.status === 401 || error.status === 403)) {
+    await supabase.auth.signOut({ scope: "local" });
+  }
+}
+
 /**
  * AuthProvider — wrap this around the dashboard layout.
  * Makes ONE getSession() call for the whole tree instead of one per
@@ -274,8 +304,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+    } = supabase.auth.onAuthStateChange((event, session) => {
       if (!mounted) return;
+      if (
+        event === "SIGNED_OUT" &&
+        PROTECTED_PATHS.some((p) => window.location.pathname.startsWith(p))
+      ) {
+        window.location.replace("/login");
+        return;
+      }
       const currentUser = session?.user ?? null;
       setUser(currentUser);
 
@@ -293,16 +330,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setLoading(false);
     });
 
+    // Re-validate when the user comes back to a tab that may have sat
+    // idle while its session was revoked elsewhere.
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void expireSessionIfInvalid();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
     return () => {
       mounted = false;
       clearTimeout(safetyTimer);
       subscription.unsubscribe();
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [fetchProfile]);
 
   const signOut = useCallback(async () => {
     const supabase = createClient();
-    await supabase.auth.signOut();
+    // Local scope: signing out here must not revoke the member's
+    // sessions on other devices (Supabase defaults to 'global'). The
+    // Sessions card has an explicit "sign out everywhere" for that.
+    await supabase.auth.signOut({ scope: "local" });
     setUser(null);
     setProfile(null);
     setAccount(null);
