@@ -20,7 +20,8 @@ export default function DataDeletionPage() {
       <h2>How to request deletion</h2>
       <ol>
         <li>
-          Email <a href={`mailto:${LEGAL_CONTACT_EMAIL}`}>{LEGAL_CONTACT_EMAIL}</a> with
+          Email <a href={`mailto:${LEGAL_CONTACT_EMAIL}`}>{LEGAL_CONTACT_EMAIL}</a>{" "}
+          with
           the subject &quot;Data deletion request&quot;.
         </li>
         <li>
