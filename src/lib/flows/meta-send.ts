@@ -17,6 +17,7 @@ import {
 } from '@/lib/whatsapp/phone-utils'
 import { supabaseAdmin } from './admin-client'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
+import { engineSendSocial, resolveSocialTarget } from '@/lib/social/send'
 
 // ------------------------------------------------------------
 // Flows-side Meta sender (interactive variants).
@@ -67,6 +68,14 @@ export async function engineSendText(
   args: SendTextEngineArgs,
 ): Promise<{ whatsapp_message_id: string }> {
   const db = supabaseAdmin()
+
+  // Instagram / Messenger thread → send through the connected Page.
+  const social = await resolveSocialTarget(db, args.accountId, args.conversationId)
+  if (social) {
+    return engineSendSocial(db, args.accountId, social, { kind: 'text', text: args.text }, {
+      aiGenerated: args.aiGenerated,
+    })
+  }
 
   const { data: contact, error: contactErr } = await db
     .from('contacts')
@@ -186,6 +195,17 @@ export async function engineSendMedia(
   args: SendMediaEngineArgs,
 ): Promise<{ whatsapp_message_id: string }> {
   const db = supabaseAdmin()
+
+  const social = await resolveSocialTarget(db, args.accountId, args.conversationId)
+  if (social) {
+    return engineSendSocial(
+      db,
+      args.accountId,
+      social,
+      { kind: 'media', mediaKind: args.kind, url: args.link },
+      { caption: args.caption },
+    )
+  }
 
   const { data: contact, error: contactErr } = await db
     .from('contacts')
@@ -345,6 +365,29 @@ async function sendInteractiveViaMeta(
   input: SendInput,
 ): Promise<{ whatsapp_message_id: string }> {
   const db = supabaseAdmin()
+
+  // Instagram / Messenger: buttons and list rows become quick replies.
+  const social = await resolveSocialTarget(db, input.accountId, input.conversationId)
+  if (social) {
+    const payload =
+      input.kind === 'buttons'
+        ? {
+            kind: 'buttons' as const,
+            body: input.bodyText,
+            header: input.headerText,
+            footer: input.footerText,
+            buttons: input.buttons,
+          }
+        : {
+            kind: 'list' as const,
+            body: input.bodyText,
+            header: input.headerText,
+            footer: input.footerText,
+            button_label: input.buttonLabel,
+            sections: input.sections,
+          }
+    return engineSendSocial(db, input.accountId, social, { kind: 'interactive', payload })
+  }
 
   // Scope the contact + whatsapp_config lookups by account_id —
   // same defense-in-depth rationale as automations/meta-send.ts.

@@ -245,8 +245,11 @@ export async function resolveAudience(
   // Campaign opt-out applies to every audience type, CSV included: a
   // number in an uploaded file that matches an opted-out contact is
   // still skipped.
-  const allowed = contacts.filter(canReceiveCampaign);
-  const optedOut = contacts.length - allowed.length;
+  // Instagram / Messenger-only contacts have no phone (migration 051)
+  // and can't receive a WhatsApp campaign — drop them before counting.
+  const reachable = contacts.filter((c) => normalizePhone(c.phone ?? '') !== '');
+  const allowed = reachable.filter(canReceiveCampaign);
+  const optedOut = reachable.length - allowed.length;
 
   // One recipient per phone number: two contacts sharing a number
   // would otherwise get the campaign twice.

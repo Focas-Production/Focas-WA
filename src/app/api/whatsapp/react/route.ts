@@ -86,7 +86,7 @@ export async function POST(request: Request) {
 
     const { data: conversation, error: convError } = await supabase
       .from('conversations')
-      .select('id, account_id, contact:contacts(phone)')
+      .select('id, account_id, channel, contact:contacts(phone)')
       .eq('id', targetMessage.conversation_id)
       .eq('account_id', accountId)
       .maybeSingle();
@@ -95,6 +95,13 @@ export async function POST(request: Request) {
       return NextResponse.json(
         { error: 'Conversation not found' },
         { status: 404 },
+      );
+    }
+
+    if (conversation.channel && conversation.channel !== 'whatsapp') {
+      return NextResponse.json(
+        { error: 'Reactions can only be sent on WhatsApp for now.' },
+        { status: 400 },
       );
     }
 

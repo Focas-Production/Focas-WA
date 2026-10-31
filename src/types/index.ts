@@ -118,6 +118,12 @@ export interface Contact {
   allow_api_templates?: boolean;
   /** Templates sent by automation rules (migration 048). TRUE by default. */
   allow_automation_templates?: boolean;
+  /** Page-scoped Messenger id (migration 051). */
+  messenger_psid?: string | null;
+  /** Instagram-scoped user id (migration 051). */
+  instagram_igsid?: string | null;
+  /** Instagram @handle, without the @ (migration 051). */
+  instagram_username?: string | null;
   created_at: string;
   updated_at: string;
   /** Hydrated by queries that embed `contact_tags(tags(*))` (e.g. the
@@ -167,10 +173,37 @@ export interface ContactNote {
 
 export type ConversationStatus = 'open' | 'pending' | 'closed';
 
+/** Which messaging channel a conversation lives on (migration 051). */
+export type ConversationChannel = 'whatsapp' | 'instagram' | 'messenger';
+
+/** A connected Messenger Page or Instagram account (migration 051). */
+export interface SocialChannel {
+  id: string;
+  account_id: string;
+  channel: Exclude<ConversationChannel, 'whatsapp'>;
+  /** Page id (Messenger) or Instagram professional account id. */
+  external_id: string;
+  /** The Facebook Page the channel sends through. */
+  page_id: string;
+  name?: string | null;
+  /** Instagram @handle, without the @. */
+  username?: string | null;
+  picture_url?: string | null;
+  status: 'connected' | 'disconnected';
+  last_error?: string | null;
+  connected_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Conversation {
   id: string;
   user_id: string;
   contact_id: string;
+  /** Defaults to 'whatsapp' for rows created before migration 051. */
+  channel?: ConversationChannel;
+  /** The Page / Instagram account an Instagram or Messenger thread uses. */
+  social_channel_id?: string | null;
   status: ConversationStatus;
   assigned_agent_id?: string;
   last_message_text?: string;
@@ -251,6 +284,11 @@ export interface Message {
    * Migration 049.
    */
   deleted_at?: string | null;
+  /**
+   * When the sender edited the message on WhatsApp. content_text already
+   * holds the new text; the inbox labels it "Edited". Migration 052.
+   */
+  edited_at?: string | null;
   created_at: string;
   reply_to_message_id?: string;
   /**

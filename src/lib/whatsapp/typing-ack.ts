@@ -1,6 +1,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { sendTypingIndicator } from './meta-api'
 import { decrypt } from './encryption'
+import { resolveSocialTarget } from '@/lib/social/send'
+import { sendSocialSenderAction } from '@/lib/social/graph-api'
 
 /**
  * Best-effort "typing…" acknowledgment of an inbound message, for the
@@ -24,6 +26,27 @@ export async function ackInboundWithTyping(
   args: { accountId: string; inboundMessageId: string },
 ): Promise<void> {
   try {
+    // Instagram / Messenger mids aren't wamids — show typing_on through
+    // the conversation's Page instead of the WhatsApp number.
+    if (!args.inboundMessageId.startsWith('wamid.')) {
+      const { data: msg } = await db
+        .from('messages')
+        .select('conversation_id')
+        .eq('message_id', args.inboundMessageId)
+        .limit(1)
+        .maybeSingle()
+      if (!msg) return
+      const target = await resolveSocialTarget(db, args.accountId, msg.conversation_id)
+      if (!target) return
+      await sendSocialSenderAction({
+        pageId: target.pageId,
+        pageAccessToken: target.pageAccessToken,
+        recipientId: target.recipientId,
+        action: 'typing_on',
+      })
+      return
+    }
+
     const { data: config } = await db
       .from('whatsapp_config')
       .select('phone_number_id, access_token')

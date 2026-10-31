@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { format } from "date-fns";
 import { useTranslations } from "next-intl";
+import { ChannelGlyph } from "./channel-icon";
 
 interface ContactSidebarProps {
   contact: Contact | null;
@@ -127,7 +128,10 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
     );
   }
 
-  const displayName = contact.name || contact.phone;
+  const displayName =
+    contact.name ||
+    contact.phone ||
+    (contact.instagram_username ? `@${contact.instagram_username}` : "?");
   const initials = displayName.charAt(0).toUpperCase();
 
   return (
@@ -155,20 +159,41 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
             )}
           </div>
 
-          {/* Phone */}
+          {/* Phone — absent for Instagram / Messenger-only contacts */}
           <div className="mt-4 space-y-2">
-            <button
-              onClick={handleCopyPhone}
-              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted"
-            >
-              <Phone className="h-4 w-4 text-muted-foreground" />
-              <span className="flex-1 text-left">{contact.phone}</span>
-              {copied ? (
-                <Check className="h-3 w-3 text-primary" />
-              ) : (
-                <Copy className="h-3 w-3 text-muted-foreground" />
-              )}
-            </button>
+            {contact.phone && (
+              <button
+                onClick={handleCopyPhone}
+                className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted"
+              >
+                <Phone className="h-4 w-4 text-muted-foreground" />
+                <span className="flex-1 text-left">{contact.phone}</span>
+                {copied ? (
+                  <Check className="h-3 w-3 text-primary" />
+                ) : (
+                  <Copy className="h-3 w-3 text-muted-foreground" />
+                )}
+              </button>
+            )}
+
+            {contact.instagram_username && (
+              <a
+                href={`https://instagram.com/${encodeURIComponent(contact.instagram_username)}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted"
+              >
+                <ChannelGlyph channel="instagram" className="h-4 w-4" />
+                <span className="truncate">@{contact.instagram_username}</span>
+              </a>
+            )}
+
+            {contact.messenger_psid && (
+              <div className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted-foreground">
+                <ChannelGlyph channel="messenger" className="h-4 w-4" />
+                <span className="truncate">Messenger</span>
+              </div>
+            )}
 
             {contact.email && (
               <div className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted-foreground">

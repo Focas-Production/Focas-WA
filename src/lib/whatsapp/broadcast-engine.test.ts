@@ -245,7 +245,7 @@ describe('runBroadcast', () => {
     h.tables.broadcasts[0].template_variables = { '1': { type: 'field', value: 'name' } }
     // c00000 already has a thread; the others get one created.
     h.tables.conversations = [
-      { id: 'conv-existing', account_id: 'acc1', contact_id: 'c00000', created_at: '2026-01-01T00:00:00.000Z' },
+      { id: 'conv-existing', account_id: 'acc1', contact_id: 'c00000', channel: 'whatsapp', created_at: '2026-01-01T00:00:00.000Z' },
     ]
     send.mockImplementation(async ({ to }) => ({ messageId: `wamid.${to}` }))
 

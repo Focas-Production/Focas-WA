@@ -63,6 +63,14 @@ import {
   type WalletChargeSource,
 } from '@/lib/wallet/wallet';
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver';
+import type { SocialOutboundMessage } from '@/lib/social/graph-api';
+import {
+  deliverSocialMessage,
+  isSocialChannel,
+  resolveSocialTarget,
+  SocialSendError,
+  type SocialTarget,
+} from '@/lib/social/send';
 
 export const MEDIA_KINDS = ['image', 'video', 'document', 'audio'] as const;
 export const VALID_MESSAGE_TYPES = [
@@ -255,6 +263,13 @@ export async function sendMessageToConversation(
   }
 
   const contact = conversation.contact;
+
+  // Instagram / Messenger threads have no phone and no WhatsApp config —
+  // they send through the connected Page instead.
+  if (isSocialChannel(conversation.channel)) {
+    return sendSocialInConversation(db, accountId, conversation.contact, params);
+  }
+
   if (!contact?.phone) {
     throw new SendMessageError(
       'bad_request',
@@ -623,8 +638,16 @@ export async function sendMessageToConversation(
     });
   }
 
-  // Pause any active Flow run for this contact — the agent stepping in
-  // is the strongest "yield, human is here" signal. Best-effort.
+  await pauseActiveFlowRuns(accountId, contact.id);
+
+  return { messageId: messageRecord.id, whatsappMessageId: waMessageId };
+}
+
+/**
+ * Pause any active Flow run for this contact — the agent stepping in
+ * is the strongest "yield, human is here" signal. Best-effort.
+ */
+async function pauseActiveFlowRuns(accountId: string, contactId: string) {
   try {
     const { error: pauseErr } = await supabaseAdmin()
       .from('flow_runs')
@@ -634,7 +657,7 @@ export async function sendMessageToConversation(
         end_reason: 'agent_replied',
       })
       .eq('account_id', accountId)
-      .eq('contact_id', contact.id)
+      .eq('contact_id', contactId)
       .eq('status', 'active');
     if (pauseErr) {
       console.error('[flows] pause-on-agent-send failed:', pauseErr.message);
@@ -645,6 +668,123 @@ export async function sendMessageToConversation(
       err instanceof Error ? err.message : err
     );
   }
+}
 
-  return { messageId: messageRecord.id, whatsappMessageId: waMessageId };
+/**
+ * The Instagram / Messenger branch of `sendMessageToConversation`:
+ * text, media and interactive (rendered as quick replies). Templates
+ * are a WhatsApp concept and are rejected. No wallet charge — these
+ * channels don't bill per message.
+ */
+async function sendSocialInConversation(
+  db: SupabaseClient,
+  accountId: string,
+  contact: { id: string },
+  params: SendMessageParams
+): Promise<SendMessageResult> {
+  const {
+    conversationId,
+    messageType,
+    contentText,
+    mediaUrl,
+    interactivePayload,
+    replyToMessageId,
+  } = params;
+
+  if (messageType === 'template') {
+    throw new SendMessageError(
+      'unsupported_on_channel',
+      'Templates can only be sent on WhatsApp.',
+      400
+    );
+  }
+
+  let target: SocialTarget | null;
+  try {
+    target = await resolveSocialTarget(db, accountId, conversationId);
+  } catch (err) {
+    if (err instanceof SocialSendError) {
+      throw new SendMessageError('channel_not_connected', err.message, 400);
+    }
+    throw err;
+  }
+  if (!target) {
+    throw new SendMessageError('not_found', 'Conversation not found', 404);
+  }
+
+  const isMediaKind = (MEDIA_KINDS as readonly string[]).includes(messageType);
+  const outbound: SocialOutboundMessage = isMediaKind
+    ? { kind: 'media', mediaKind: messageType as MediaKind, url: mediaUrl! }
+    : messageType === 'interactive'
+      ? { kind: 'interactive', payload: interactivePayload! }
+      : { kind: 'text', text: contentText! };
+
+  let socialMessageId: string;
+  try {
+    socialMessageId = await deliverSocialMessage(
+      target,
+      outbound,
+      isMediaKind ? contentText : null
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown Meta API error';
+    console.error(`[send-message] ${target.channel} send failed:`, message);
+    throw new SendMessageError('meta_error', `Meta API error: ${message}`, 502);
+  }
+
+  const storedText =
+    messageType === 'interactive' ? interactivePayload!.body : (contentText ?? null);
+
+  const { data: messageRecord, error: msgError } = await db
+    .from('messages')
+    .insert({
+      conversation_id: conversationId,
+      sender_type: 'agent',
+      content_type: messageType,
+      content_text: storedText,
+      media_url: mediaUrl || null,
+      interactive_payload:
+        messageType === 'interactive' ? interactivePayload : null,
+      message_id: socialMessageId,
+      status: 'sent',
+      reply_to_message_id: replyToMessageId || null,
+    })
+    .select()
+    .single();
+
+  if (msgError) {
+    console.error('[send-message] error inserting sent message:', msgError);
+    throw new SendMessageError(
+      'db_error',
+      `Message sent to Meta but failed to save to DB: ${msgError.message}`,
+      500
+    );
+  }
+
+  await db
+    .from('conversations')
+    .update({
+      last_message_text:
+        messageType === 'interactive'
+          ? interactivePayloadPreviewText(interactivePayload!)
+          : storedText || `[${messageType}]`,
+      last_message_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', conversationId);
+
+  await dispatchWebhookEvent(supabaseAdmin(), accountId, 'message.sent', {
+    conversation_id: conversationId,
+    contact_id: contact.id,
+    channel: target.channel,
+    message_id: messageRecord.id,
+    whatsapp_message_id: socialMessageId,
+    content_type: messageType,
+    text: storedText,
+    sender_type: 'agent',
+  });
+
+  await pauseActiveFlowRuns(accountId, contact.id);
+
+  return { messageId: messageRecord.id, whatsappMessageId: socialMessageId };
 }

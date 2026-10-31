@@ -8,7 +8,8 @@ import {
   normalizeConversations,
 } from "@/lib/inbox/conversations";
 import { cn } from "@/lib/utils";
-import type { Conversation, ConversationStatus, Tag } from "@/types";
+import type { Conversation, ConversationChannel, ConversationStatus, Tag } from "@/types";
+import { ChannelBadge, ChannelGlyph, CHANNEL_LABEL } from "./channel-icon";
 import { Search, ChevronDown, X } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { useTranslations } from "next-intl";
@@ -72,6 +73,7 @@ export function ConversationList({
   const [tags, setTags] = useState<Tag[]>([]);
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const [selectedCompany, setSelectedCompany] = useState<string | null>(null);
+  const [channelFilter, setChannelFilter] = useState<ConversationChannel | "all">("all");
 
   // Keep the latest callback in a ref so the fetch effect below can
   // have a stable, empty-dep identity. Previously the fetch useCallback
@@ -152,6 +154,14 @@ export function ConversationList({
     return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [conversations]);
 
+  // Channels present in the loaded conversations. The channel picker only
+  // shows once a second channel (Instagram / Messenger) is in play.
+  const channels = useMemo(() => {
+    const set = new Set<ConversationChannel>();
+    for (const c of conversations) set.add(c.channel ?? "whatsapp");
+    return (["whatsapp", "instagram", "messenger"] as const).filter((ch) => set.has(ch));
+  }, [conversations]);
+
   const tagsById = useMemo(() => {
     const m = new Map<string, Tag>();
     for (const t of tags) m.set(t.id, t);
@@ -165,6 +175,10 @@ export function ConversationList({
       result = result.filter((c) => c.unread_count > 0);
     } else if (filter !== "all") {
       result = result.filter((c) => c.status === filter);
+    }
+
+    if (channelFilter !== "all") {
+      result = result.filter((c) => (c.channel ?? "whatsapp") === channelFilter);
     }
 
     // Contact-based filters (tags via OR logic, exact company match).
@@ -182,13 +196,16 @@ export function ConversationList({
       result = result.filter((c) => {
         const name = c.contact?.name?.toLowerCase() ?? "";
         const phone = c.contact?.phone?.toLowerCase() ?? "";
+        const handle = c.contact?.instagram_username?.toLowerCase() ?? "";
         const lastMsg = c.last_message_text?.toLowerCase() ?? "";
-        return name.includes(q) || phone.includes(q) || lastMsg.includes(q);
+        return (
+          name.includes(q) || phone.includes(q) || handle.includes(q) || lastMsg.includes(q)
+        );
       });
     }
 
     return result;
-  }, [conversations, filter, search, selectedTagIds, selectedCompany]);
+  }, [conversations, filter, channelFilter, search, selectedTagIds, selectedCompany]);
 
   const toggleTag = useCallback((id: string) => {
     setSelectedTagIds((prev) =>
@@ -262,6 +279,46 @@ export function ConversationList({
               ))}
             </DropdownMenuContent>
           </DropdownMenu>
+
+          {(channels.length > 1 || channelFilter !== "all") && (
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                className={cn(
+                  "inline-flex items-center justify-center h-7 gap-1 px-2 text-xs rounded-md hover:bg-muted",
+                  channelFilter !== "all"
+                    ? "text-primary"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                {channelFilter === "all" ? t("channel") : CHANNEL_LABEL[channelFilter]}
+                <ChevronDown className="h-3 w-3" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="border-border bg-popover">
+                <DropdownMenuItem
+                  onClick={() => setChannelFilter("all")}
+                  className={cn(
+                    "text-sm",
+                    channelFilter === "all" ? "text-primary" : "text-popover-foreground"
+                  )}
+                >
+                  {t("channelAll")}
+                </DropdownMenuItem>
+                {channels.map((ch) => (
+                  <DropdownMenuItem
+                    key={ch}
+                    onClick={() => setChannelFilter(ch)}
+                    className={cn(
+                      "text-sm",
+                      channelFilter === ch ? "text-primary" : "text-popover-foreground"
+                    )}
+                  >
+                    <ChannelGlyph channel={ch} className="mr-2 h-4 w-4" />
+                    {CHANNEL_LABEL[ch]}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
 
           {tags.length > 0 && (
             <DropdownMenu>
@@ -437,7 +494,11 @@ function ConversationItem({
   t,
 }: ConversationItemProps) {
   const contact = conversation.contact;
-  const displayName = contact?.name || contact?.phone || t("unknown");
+  const displayName =
+    contact?.name ||
+    contact?.phone ||
+    (contact?.instagram_username ? `@${contact.instagram_username}` : "") ||
+    t("unknown");
   const initials = displayName.charAt(0).toUpperCase();
 
   const handleClick = useCallback(() => {
@@ -459,7 +520,7 @@ function ConversationItem({
       )}
     >
       {/* Avatar */}
-      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-medium text-foreground">
+      <div className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-medium text-foreground">
         {contact?.avatar_url ? (
           <img
             src={contact.avatar_url}
@@ -468,6 +529,12 @@ function ConversationItem({
           />
         ) : (
           initials
+        )}
+        {conversation.channel && conversation.channel !== "whatsapp" && (
+          <ChannelBadge
+            channel={conversation.channel}
+            className="absolute -bottom-0.5 -right-0.5"
+          />
         )}
       </div>
 

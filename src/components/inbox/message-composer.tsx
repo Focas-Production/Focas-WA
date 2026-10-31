@@ -53,7 +53,7 @@ import {
   blankButtonsPayload,
 } from "@/components/interactive/interactive-builder";
 import { validateInteractivePayload } from "@/lib/whatsapp/interactive";
-import type { InteractiveMessagePayload, QuickReply } from "@/types";
+import type { ConversationChannel, InteractiveMessagePayload, QuickReply } from "@/types";
 import { QuickReplyPicker } from "./quick-reply-picker";
 
 /** Media content types an agent can send from the composer. */
@@ -111,6 +111,8 @@ interface MediaDraft {
 
 interface MessageComposerProps {
   conversationId: string;
+  /** Instagram / Messenger threads have no templates to fall back on. */
+  channel?: ConversationChannel;
   sessionExpired: boolean;
   onSend: (text: string, replyToId?: string) => void;
   onSendMedia: (payload: SendMediaPayload) => void;
@@ -133,6 +135,7 @@ const OPUS_ENCODER_PATH = "/opus/encoderWorker.min.js";
 
 export function MessageComposer({
   conversationId,
+  channel = "whatsapp",
   sessionExpired,
   onSend,
   onSendMedia,
@@ -574,7 +577,12 @@ export function MessageComposer({
           />
         </div>
       )}
-      {sessionExpired && (
+      {sessionExpired && channel !== "whatsapp" && (
+        <div className="mb-2 rounded-lg bg-amber-500/10 px-3 py-2">
+          <p className="text-xs text-amber-400">{t("socialSessionExpiredHint")}</p>
+        </div>
+      )}
+      {sessionExpired && channel === "whatsapp" && (
         <div className="mb-2 flex items-center justify-between rounded-lg bg-amber-500/10 px-3 py-2">
           <p className="text-xs text-amber-400">
             {t("sessionExpiredHint")}
@@ -725,17 +733,20 @@ export function MessageComposer({
             </DropdownMenuContent>
           </DropdownMenu>
 
-          <GatedButton
-            variant="ghost"
-            size="sm"
-            canAct={!readOnly}
-            gateReason="send messages"
-            title={readOnly ? undefined : t("sendTemplate")}
-            className="h-9 w-9 shrink-0 p-0 text-muted-foreground hover:text-foreground"
-            onClick={onOpenTemplates}
-          >
-            <LayoutTemplate className="h-4 w-4" />
-          </GatedButton>
+          {/* Templates are WhatsApp-only. */}
+          {channel === "whatsapp" && (
+            <GatedButton
+              variant="ghost"
+              size="sm"
+              canAct={!readOnly}
+              gateReason="send messages"
+              title={readOnly ? undefined : t("sendTemplate")}
+              className="h-9 w-9 shrink-0 p-0 text-muted-foreground hover:text-foreground"
+              onClick={onOpenTemplates}
+            >
+              <LayoutTemplate className="h-4 w-4" />
+            </GatedButton>
+          )}
 
           <GatedButton
             variant="ghost"
@@ -763,7 +774,9 @@ export function MessageComposer({
               readOnly
                 ? t("readOnlyPlaceholder")
                 : sessionExpired
-                  ? t("sessionExpiredPlaceholder")
+                  ? channel === "whatsapp"
+                    ? t("sessionExpiredPlaceholder")
+                    : t("socialSessionExpiredPlaceholder")
                   : t("typeMessagePlaceholder")
             }
             disabled={sessionExpired || readOnly}

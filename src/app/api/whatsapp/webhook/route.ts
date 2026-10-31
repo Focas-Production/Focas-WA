@@ -54,6 +54,8 @@ interface WhatsAppMessage {
   reaction?: { message_id: string; emoji: string }
   /** Set when the customer deletes a message (coexistence numbers only). */
   revoke?: { original_message_id: string }
+  /** Set when the sender edits a message; `message` is the new content. */
+  edit?: MessageEdit
   /**
    * Set when the customer taps a button or list row on an interactive
    * message we sent. `button_reply.id` / `list_reply.id` is whatever id
@@ -93,6 +95,17 @@ interface WhatsAppMessage {
   }
   /** Present when the customer swipe-replies to one of our messages. */
   context?: { id: string }
+}
+
+interface MessageEdit {
+  original_message_id?: string
+  message?: {
+    type?: string
+    text?: { body?: string }
+    image?: { caption?: string }
+    video?: { caption?: string }
+    document?: { caption?: string }
+  }
 }
 
 interface WhatsAppWebhookEntry {
@@ -656,6 +669,7 @@ async function updateEchoMessageStatus(
     .select('id')
     .eq('account_id', config.account_id)
     .eq('contact_id', contact.id)
+    .eq('channel', 'whatsapp')
     .order('created_at', { ascending: true })
     .limit(1)
     .maybeSingle()
@@ -715,6 +729,58 @@ async function handleRevoke(
     .eq('id', targetInternalId)
   if (error) {
     console.error('[webhook] revoke update failed:', error.message)
+  }
+}
+
+/**
+ * A message edited on WhatsApp. Rewrites the original's text (or media
+ * caption) and stamps edited_at instead of storing the edit as its own
+ * "[edit]" bubble; the inbox labels it "Edited".
+ */
+async function handleEdit(edit: MessageEdit | undefined, conversationId: string) {
+  if (!edit?.original_message_id) return
+  const m = edit.message
+  const newText =
+    m?.text?.body ?? m?.image?.caption ?? m?.video?.caption ?? m?.document?.caption
+  if (newText === undefined) return
+
+  const targetInternalId = await lookupInternalIdByMetaId(
+    edit.original_message_id,
+    conversationId
+  )
+  if (!targetInternalId) {
+    console.warn(
+      '[webhook] edit target message not found; skipping',
+      edit.original_message_id
+    )
+    return
+  }
+
+  const { data: target, error } = await supabaseAdmin()
+    .from('messages')
+    .update({ content_text: newText, edited_at: new Date().toISOString() })
+    .eq('id', targetInternalId)
+    .select('created_at')
+    .single()
+  if (error) {
+    console.error('[webhook] edit update failed:', error.message)
+    return
+  }
+
+  // Refresh the conversation preview only if the edited message is the
+  // latest one — otherwise the preview shows a newer message.
+  const { data: newer } = await supabaseAdmin()
+    .from('messages')
+    .select('id')
+    .eq('conversation_id', conversationId)
+    .gt('created_at', target.created_at)
+    .limit(1)
+    .maybeSingle()
+  if (!newer) {
+    await supabaseAdmin()
+      .from('conversations')
+      .update({ last_message_text: newText })
+      .eq('id', conversationId)
   }
 }
 
@@ -797,6 +863,7 @@ interface SmbEchoValue {
     sticker?: { id?: string; mime_type?: string }
     reaction?: { message_id?: string; emoji?: string }
     revoke?: { original_message_id?: string }
+    edit?: MessageEdit
   }>
 }
 
@@ -868,6 +935,12 @@ async function handleSmbMessageEchoes(value: SmbEchoValue) {
         echo.revoke?.original_message_id,
         convResult.conversation.id
       )
+      continue
+    }
+
+    // A message the business edited from the phone app.
+    if (echo.type === 'edit') {
+      await handleEdit(echo.edit, convResult.conversation.id)
       continue
     }
 
@@ -1115,8 +1188,13 @@ async function importHistoryThread(
   const messages = (thread.messages ?? []).filter(
     // Reactions aren't messages (see handleReaction); without the
     // reactor's side we can't attribute them reliably, so skip.
-    // Revokes likewise carry no content of their own.
-    (m) => m.id && m.timestamp && m.type !== 'reaction' && m.type !== 'revoke'
+    // Revokes and edits likewise carry no message of their own.
+    (m) =>
+      m.id &&
+      m.timestamp &&
+      m.type !== 'reaction' &&
+      m.type !== 'revoke' &&
+      m.type !== 'edit'
   )
   if (!thread.id || messages.length === 0) return
 
@@ -1370,6 +1448,12 @@ async function processMessage(
   // Deletes aren't messages either — mark the original, store nothing.
   if (message.type === 'revoke') {
     await handleRevoke(message.revoke?.original_message_id, conversation.id)
+    return
+  }
+
+  // Edits likewise rewrite the original rather than adding a bubble.
+  if (message.type === 'edit') {
+    await handleEdit(message.edit, conversation.id)
     return
   }
 
@@ -1973,6 +2057,7 @@ async function findOrCreateConversation(
     .select('*')
     .eq('account_id', accountId)
     .eq('contact_id', contactId)
+    .eq('channel', 'whatsapp')
     .order('created_at', { ascending: true })
     .limit(1)
 
@@ -2008,6 +2093,7 @@ async function findOrCreateConversation(
         .select('*')
         .eq('account_id', accountId)
         .eq('contact_id', contactId)
+        .eq('channel', 'whatsapp')
         .order('created_at', { ascending: true })
         .limit(1)
       if (raced && raced.length > 0) {

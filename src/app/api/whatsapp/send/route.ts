@@ -133,7 +133,7 @@ export async function POST(request: Request) {
       // caller can't open a conversation against someone else's contact.
       const { data: contactRow, error: contactErr } = await supabase
         .from('contacts')
-        .select('id')
+        .select('id, phone')
         .eq('id', contact_id)
         .eq('account_id', accountId)
         .maybeSingle()
@@ -149,7 +149,8 @@ export async function POST(request: Request) {
         supabase,
         accountId,
         user.id,
-        contact_id
+        contact_id,
+        Boolean(contactRow.phone)
       )
       if (!resolved) {
         return NextResponse.json(
@@ -224,15 +225,30 @@ async function findOrCreateConversation(
   accountId: string,
   userId: string,
   contactId: string,
+  hasPhone: boolean,
 ): Promise<string | null> {
   const { data: existing } = await supabase
     .from('conversations')
     .select('id')
     .eq('account_id', accountId)
     .eq('contact_id', contactId)
+    .eq('channel', 'whatsapp')
     .maybeSingle()
 
   if (existing) return existing.id
+
+  // Instagram / Messenger-only contact (no phone): reply on their most
+  // recent social thread — a WhatsApp thread could never be delivered.
+  if (!hasPhone) {
+    const { data: social } = await supabase
+      .from('conversations')
+      .select('id')
+      .eq('account_id', accountId)
+      .eq('contact_id', contactId)
+      .order('last_message_at', { ascending: false, nullsFirst: false })
+      .limit(1)
+    return social?.[0]?.id ?? null
+  }
 
   const { data: created, error } = await supabase
     .from('conversations')

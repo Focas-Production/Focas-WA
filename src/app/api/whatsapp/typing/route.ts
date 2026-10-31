@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { sendTypingIndicator } from '@/lib/whatsapp/meta-api';
 import { decrypt } from '@/lib/whatsapp/encryption';
+import { ackInboundWithTyping } from '@/lib/whatsapp/typing-ack';
 import {
   checkRateLimit,
   rateLimitResponse,
@@ -105,6 +106,15 @@ export async function POST(request: Request) {
     const ageMs = Date.now() - new Date(lastInbound.created_at).getTime();
     if (ageMs > 24 * 60 * 60 * 1000) {
       return NextResponse.json({ shown: false, reason: 'session_expired' });
+    }
+
+    // Instagram / Messenger thread: typing_on through the Page.
+    if (!lastInbound.message_id.startsWith('wamid.')) {
+      await ackInboundWithTyping(supabase, {
+        accountId,
+        inboundMessageId: lastInbound.message_id,
+      });
+      return NextResponse.json({ shown: true });
     }
 
     const { data: config, error: configError } = await supabase

@@ -144,7 +144,9 @@
       "clearAll": "Clear all",
       "noConversations": "No conversations found",
       "noMessagesYet": "No messages yet",
-      "unknown": "Unknown"
+      "unknown": "Unknown",
+      "channelAll": "All channels",
+      "channel": "Channel"
     },
     "messageThread": {
       "loadOlder": "Load older messages",
@@ -206,7 +208,9 @@
       "send": "Send",
       "quickReplyNamePrompt": "Name this quick reply:",
       "quickReplySaved": "Saved as a quick reply.",
-      "quickReplySaveError": "Couldn't save the quick reply."
+      "quickReplySaveError": "Couldn't save the quick reply.",
+      "socialSessionExpiredHint": "The 7-day reply window has closed. Instagram and Messenger can't re-open a chat — wait for the customer to message again.",
+      "socialSessionExpiredPlaceholder": "Reply window closed"
     },
     "bubble": {
       "photo": "Photo",
@@ -222,7 +226,8 @@
       "aiBadge": "AI",
       "aiBadgeTitle": "Sent automatically by the AI assistant",
       "failedNoReason": "Not delivered — no reason recorded",
-      "deleted": "Deleted"
+      "deleted": "Deleted",
+      "edited": "Edited"
     },
     "actions": {
       "reply": "Reply",
@@ -1728,6 +1733,7 @@
       "security": "Login & security",
       "appearance": "Appearance",
       "whatsapp": "WhatsApp",
+      "social": "Instagram & Messenger",
       "templates": "Templates",
       "quick-replies": "Quick replies",
       "fields": "Fields & tags",
@@ -2207,6 +2213,50 @@
       "reindex": "Reindex",
       "reindexTooltip": "Re-embed all documents (e.g. after adding an embeddings key)",
       "loading": "Loading…"
+    },
+    "social": {
+      "title": "Instagram & Messenger",
+      "description": "Connect your Facebook Pages and Instagram professional accounts so their direct messages land in the shared inbox next to WhatsApp.",
+      "loadFailed": "Failed to load connected channels",
+      "connectedCount": "{count} connected",
+      "connectedTitle": "Connected channels",
+      "noneConnected": "No Instagram or Messenger channels connected yet.",
+      "statusDisconnected": "Disconnected",
+      "disconnect": "Disconnect",
+      "disconnectConfirm": "Disconnect {name}? New messages from it will stop arriving. Existing conversations are kept.",
+      "disconnectFailed": "Failed to disconnect",
+      "disconnected": "Channel disconnected",
+      "connectTitle": "Connect a channel",
+      "connectDesc": "Log in with a Facebook account that admins the Page. Instagram accounts must be professional (Business or Creator) and linked to that Page.",
+      "continueWithFacebook": "Continue with Facebook",
+      "appIdMissing": "Set NEXT_PUBLIC_META_APP_ID (and META_APP_ID / META_APP_SECRET on the server) to enable Facebook login.",
+      "loginCancelled": "Facebook login was cancelled.",
+      "pagesFailed": "Could not load your Facebook Pages",
+      "noPages": "No Pages found on this Facebook account. Make sure you granted access to at least one Page.",
+      "pickChannel": "Select Messenger and/or Instagram to connect.",
+      "alreadyConnected": "Connected",
+      "noInstagramLinked": "No Instagram account linked",
+      "connect": "Connect",
+      "connectFailed": "Failed to connect channel",
+      "connectSuccess": "Connected: {names}",
+      "manualTitle": "Connect with a Page access token instead",
+      "manualDesc": "Paste a Page access token (for example a non-expiring System User token from Meta Business Settings). Messenger and the linked Instagram account are both connected.",
+      "pageIdLabel": "Page ID (optional)",
+      "pageTokenLabel": "Page access token",
+      "manualTokenRequired": "Page access token is required",
+      "manualConnect": "Connect Page",
+      "webhookTitle": "Webhook setup (one-time, in your Meta app)",
+      "webhookDesc": "Meta delivers Instagram and Messenger messages to this URL.",
+      "webhookUrlLabel": "Callback URL",
+      "copy": "Copy",
+      "copySuccess": "Webhook URL copied",
+      "copyFailed": "Could not copy",
+      "setupStep1": "In developers.facebook.com → your app, add the Messenger and Instagram products.",
+      "setupStep2": "Messenger → Webhooks (Page object): set the callback URL above and the verify token from META_SOCIAL_VERIFY_TOKEN; subscribe to messages, messaging_postbacks, message_deliveries, message_reads, message_echoes, message_reactions.",
+      "setupStep3": "Instagram → Webhooks (Instagram object): same URL and token; subscribe to messages, messaging_postbacks, messaging_seen, message_reactions.",
+      "setupStep4": "Request Advanced Access for pages_messaging and instagram_manage_messages (App Review) before going live with customers.",
+      "windowNote": "Meta allows replies within 24 hours of the customer's last message (up to 7 days for apps approved for the Human Agent tag). Templates are WhatsApp-only.",
+      "httpsRequired": "Facebook Login needs HTTPS. Run `npm run dev:https` and open https://localhost:3000 (or use an ngrok/cloudflared tunnel), and add the domain under App Domains in your Meta app. Or use the Page access token option below."
     }
   },
   "WalletBanner": {

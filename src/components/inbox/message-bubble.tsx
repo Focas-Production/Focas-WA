@@ -353,6 +353,16 @@ export function MessageBubble({
               {t("deleted")}
             </span>
           )}
+          {message.edited_at && !message.deleted_at && (
+            <span
+              className={cn(
+                "text-[10px] italic",
+                isAgent ? "text-primary-foreground/70" : "text-muted-foreground",
+              )}
+            >
+              {t("edited")}
+            </span>
+          )}
           {/* AI badge — only on replies the auto-reply bot generated
               (always outbound, so it sits on the primary fill). Lets
               agents tell an AI reply from their own / a Flow's at a

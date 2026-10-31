@@ -17,6 +17,7 @@ import {
   AUTOMATION_TEMPLATES_BLOCKED_MESSAGE,
 } from '@/lib/contacts/campaign-consent'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
+import { engineSendSocial, resolveSocialTarget, SOCIAL_CHANNEL_LABEL } from '@/lib/social/send'
 import {
   getTemplateCharge,
   chargeTemplateSend,
@@ -120,6 +121,19 @@ type SendInput =
 
 async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: string }> {
   const db = supabaseAdmin()
+
+  // Instagram / Messenger thread → send through the connected Page.
+  // Templates are WhatsApp-only, so a template step fails with a clear
+  // reason in the automation log instead of a confusing Meta error.
+  const social = await resolveSocialTarget(db, input.accountId, input.conversationId)
+  if (social) {
+    if (input.kind === 'template') {
+      throw new Error(
+        `Templates can only be sent on WhatsApp — this conversation is on ${SOCIAL_CHANNEL_LABEL[social.channel]}.`,
+      )
+    }
+    return engineSendSocial(db, input.accountId, social, { kind: 'text', text: input.text })
+  }
 
   // Scope the contact + config lookups by account_id, not user_id.
   // The engine uses the service-role client (bypassing RLS); without

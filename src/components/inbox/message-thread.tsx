@@ -49,6 +49,7 @@ import {
 import { deleteAccountMedia } from "@/lib/storage/upload-media";
 import { renderTemplateBody } from "@/lib/whatsapp/template-render";
 import { TemplatePicker } from "./template-picker";
+import { ChannelBadge, CHANNEL_LABEL } from "./channel-icon";
 import { AiThreadBanner } from "./ai-thread-banner";
 import { buildReplyPreview } from "./reply-quote";
 import { toast } from "sonner";
@@ -233,6 +234,13 @@ export function MessageThread({
     };
   }, []);
 
+  // Instagram / Messenger threads (migration 051). Their reply window
+  // is 24h for standard replies and up to 7 days with the HUMAN_AGENT
+  // tag (the server retries with it), so the composer stays open for 7.
+  const channel = conversation?.channel ?? "whatsapp";
+  const isSocial = channel !== "whatsapp";
+  const windowHours = isSocial ? 7 * 24 : 24;
+
   // 24-hour session timer
   const sessionInfo = useMemo(() => {
     if (!messages.length) return { expired: false, remaining: "" };
@@ -251,20 +259,20 @@ export function MessageThread({
     if (!lastCustomerAt) return { expired: true, remaining: "No customer messages" };
 
     const hoursSince = differenceInHours(new Date(), new Date(lastCustomerAt));
-    const expired = hoursSince >= 24;
+    const expired = hoursSince >= windowHours;
 
     if (expired) {
       return { expired: true, remaining: tTimer("expired") };
     }
 
-    const hoursLeft = 24 - hoursSince;
+    const hoursLeft = windowHours - hoursSince;
     const remaining =
       hoursLeft >= 1
         ? tTimer("xhRemaining", { hours: Math.floor(hoursLeft) })
         : tTimer("xmRemaining", { minutes: Math.floor(hoursLeft * 60) });
 
     return { expired, remaining };
-  }, [messages, lastCustomerAtFromDb, tTimer]);
+  }, [messages, lastCustomerAtFromDb, tTimer, windowHours]);
 
   // Store latest callback in a ref so fetchMessages doesn't need to
   // depend on `onMessagesLoaded` — otherwise parent re-renders cause
@@ -796,7 +804,10 @@ export function MessageThread({
     return map;
   }, [reactions]);
 
-  const contactDisplayName = contact?.name || contact?.phone || "Customer";
+  const contactDisplayName =
+    contact?.name ||
+    contact?.phone ||
+    (contact?.instagram_username ? `@${contact.instagram_username}` : "Customer");
 
   // Author label for a quoted message: "You" when we sent the parent,
   // contact name when the customer sent it.
@@ -924,7 +935,15 @@ export function MessageThread({
     );
   }
 
-  const displayName = contact.name || contact.phone;
+  const displayName =
+    contact.name ||
+    contact.phone ||
+    (contact.instagram_username ? `@${contact.instagram_username}` : CHANNEL_LABEL[channel]);
+  const subtitle = isSocial
+    ? [CHANNEL_LABEL[channel], contact.instagram_username ? `@${contact.instagram_username}` : null]
+        .filter(Boolean)
+        .join(" · ")
+    : contact.phone;
   const messageGroups = groupMessagesByDate(messages);
   const currentStatus = STATUS_OPTIONS.find(
     (s) => s.value === conversation.status
@@ -961,12 +980,15 @@ export function MessageThread({
               <ArrowLeft className="h-5 w-5" />
             </button>
           )}
-          <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-muted text-sm font-medium text-foreground">
+          <div className="relative flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-muted text-sm font-medium text-foreground">
             {displayName.charAt(0).toUpperCase()}
+            {isSocial && (
+              <ChannelBadge channel={channel} className="absolute -bottom-0.5 -right-0.5" />
+            )}
           </div>
           <div className="min-w-0">
             <h2 className="truncate text-sm font-semibold text-foreground">{displayName}</h2>
-            <p className="truncate text-xs text-muted-foreground">{contact.phone}</p>
+            <p className="truncate text-xs text-muted-foreground">{subtitle}</p>
           </div>
           {/* Session timer badge — hidden on the narrowest phones so
               the name + back arrow keep their room. */}
@@ -1133,9 +1155,11 @@ export function MessageThread({
         ) : messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12">
             <p className="text-sm text-muted-foreground">{t("noMessagesYet")}</p>
-            <p className="text-xs text-muted-foreground">
-              {t("sendTemplateHint")}
-            </p>
+            {!isSocial && (
+              <p className="text-xs text-muted-foreground">
+                {t("sendTemplateHint")}
+              </p>
+            )}
           </div>
         ) : (
           <div className="space-y-4">
@@ -1231,6 +1255,7 @@ export function MessageThread({
       {/* Composer */}
       <MessageComposer
         conversationId={conversation.id}
+        channel={channel}
         sessionExpired={sessionInfo.expired}
         onSend={handleSend}
         onSendMedia={handleSendMedia}
@@ -1240,11 +1265,13 @@ export function MessageThread({
         onClearReply={() => setReplyTo(null)}
       />
 
-      <TemplatePicker
-        open={templateModalOpen}
-        onOpenChange={setTemplateModalOpen}
-        onSelect={handleSendTemplate}
-      />
+      {!isSocial && (
+        <TemplatePicker
+          open={templateModalOpen}
+          onOpenChange={setTemplateModalOpen}
+          onSelect={handleSendTemplate}
+        />
+      )}
     </div>
   );
 }

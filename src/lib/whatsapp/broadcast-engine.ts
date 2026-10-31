@@ -565,6 +565,7 @@ function createInboxRecorder(accountId: string, templateName: string, body: stri
               .from('conversations')
               .select('id, contact_id')
               .eq('account_id', accountId)
+              .eq('channel', 'whatsapp')
               .in('contact_id', chunk)
               .order('created_at', { ascending: true }),
         )

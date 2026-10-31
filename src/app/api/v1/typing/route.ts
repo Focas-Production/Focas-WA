@@ -103,6 +103,7 @@ export async function POST(request: Request) {
         .select('id')
         .eq('account_id', ctx.accountId)
         .eq('contact_id', contact.id)
+        .eq('channel', 'whatsapp')
         .maybeSingle();
       if (!conversation) {
         return ok({ shown: false, reason: 'no_inbound' });

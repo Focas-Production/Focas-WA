@@ -662,13 +662,17 @@ async function resolveConversationId(args: ExecuteArgs): Promise<string> {
   const fromCtx = args.context.conversation_id
   if (fromCtx) return fromCtx
   if (!args.contactId) throw new Error('cannot resolve conversation: no contact')
-  const { data, error } = await supabaseAdmin()
+  // A contact can have one thread per channel (WhatsApp / Instagram /
+  // Messenger, migration 051) — reply on the most recently active one.
+  const { data: rows, error } = await supabaseAdmin()
     .from('conversations')
     .select('id')
     .eq('account_id', args.automation.account_id)
     .eq('contact_id', args.contactId)
-    .maybeSingle()
+    .order('last_message_at', { ascending: false, nullsFirst: false })
+    .limit(1)
   if (error) throw new Error(`conversation lookup failed: ${error.message}`)
+  const data = rows?.[0]
   if (!data?.id) {
     const prefix = args.triggerEvent === 'tag_added'
       ? 'tag_added automation cannot send'
