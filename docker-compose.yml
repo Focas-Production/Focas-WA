@@ -33,6 +33,9 @@ services:
         # renders disabled rather than the build failing on an unset var.
         NEXT_PUBLIC_META_APP_ID: ${NEXT_PUBLIC_META_APP_ID:-}
         NEXT_PUBLIC_META_ES_CONFIG_ID: ${NEXT_PUBLIC_META_ES_CONFIG_ID:-}
+        # Instagram & Messenger login configuration (Settings → Instagram
+        # & Messenger). Empty is fine — login then requests scopes directly.
+        NEXT_PUBLIC_META_SOCIAL_CONFIG_ID: ${NEXT_PUBLIC_META_SOCIAL_CONFIG_ID:-}
 
     image: wacrm:latest
     container_name: wacrm
