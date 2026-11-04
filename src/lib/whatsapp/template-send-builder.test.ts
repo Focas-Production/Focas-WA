@@ -100,6 +100,30 @@ describe('buildSendComponents — header', () => {
     ]);
   });
 
+  it('adds the file name to a DOCUMENT header when given', () => {
+    const components = buildSendComponents(
+      row({ header_type: 'document', header_media_url: 'https://example.com/sample.pdf' }),
+      { headerMediaUrl: 'https://example.com/report.pdf', headerFilename: 'Report.pdf' },
+    );
+    expect(components[0]).toEqual({
+      type: 'header',
+      parameters: [
+        { type: 'document', document: { link: 'https://example.com/report.pdf', filename: 'Report.pdf' } },
+      ],
+    });
+  });
+
+  it('ignores headerFilename on an IMAGE header', () => {
+    const components = buildSendComponents(
+      row({ header_type: 'image', header_media_url: 'https://example.com/a.jpg' }),
+      { headerFilename: 'x.pdf' },
+    );
+    expect(components[0]).toEqual({
+      type: 'header',
+      parameters: [{ type: 'image', image: { link: 'https://example.com/a.jpg' } }],
+    });
+  });
+
   it('prefers caller override URL over template sample', () => {
     const components = buildSendComponents(
       row({

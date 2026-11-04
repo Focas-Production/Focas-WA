@@ -5,7 +5,7 @@ vi.mock('./meta-api', () => ({
   uploadResumableMedia: vi.fn(async () => ({ handle: 'HANDLE123' })),
 }));
 
-import { ensureImageHeaderHandle } from './template-header-handle';
+import { ensureImageHeaderHandle, ensureMediaHeaderHandle } from './template-header-handle';
 import { uploadResumableMedia } from './meta-api';
 import type { TemplatePayload } from './template-validators';
 
@@ -79,3 +79,49 @@ describe('ensureImageHeaderHandle', () => {
     await expect(ensureImageHeaderHandle(payload(), 'tok')).rejects.toThrow(/5 MB/);
   });
 });
+
+function fileResponse(type: string, bytes: Uint8Array, ok = true, status = 200): Response {
+  return {
+    ok,
+    status,
+    headers: { get: (h: string) => (h.toLowerCase() === 'content-type' ? type : null) },
+    arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+  } as unknown as Response;
+}
+const pdfBytes = new TextEncoder().encode('%PDF-1.7 sample');
+
+describe('ensureMediaHeaderHandle — document', () => {
+  beforeEach(() => vi.mocked(uploadResumableMedia).mockClear());
+  afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
+  const doc = (over: Partial<TemplatePayload> = {}) =>
+    payload({ header_type: 'document', header_media_url: 'https://x.test/s.pdf', ...over });
+
+  it('uploads a PDF sample and sets header_handle', async () => {
+    vi.stubEnv('META_APP_ID', 'app-1');
+    vi.stubGlobal('fetch', vi.fn(async () => fileResponse('application/pdf', pdfBytes)));
+    const p = doc();
+    await ensureMediaHeaderHandle(p, 'tok');
+    expect(uploadResumableMedia).toHaveBeenCalledWith(expect.objectContaining({ mimeType: 'application/pdf', fileName: 'sample.pdf' }));
+    expect(p.header_handle).toBe('HANDLE123');
+  });
+
+  it('accepts a PDF served as octet-stream', async () => {
+    vi.stubEnv('META_APP_ID', 'app-1');
+    vi.stubGlobal('fetch', vi.fn(async () => fileResponse('application/octet-stream', pdfBytes)));
+    const p = doc();
+    await ensureMediaHeaderHandle(p, 'tok');
+    expect(p.header_handle).toBe('HANDLE123');
+  });
+
+  it('rejects a link that returns HTML instead of a PDF', async () => {
+    vi.stubEnv('META_APP_ID', 'app-1');
+    vi.stubGlobal('fetch', vi.fn(async () => fileResponse('text/html', new TextEncoder().encode('<html>'))));
+    await expect(ensureMediaHeaderHandle(doc(), 'tok')).rejects.toThrow(/must be a PDF/);
+    expect(uploadResumableMedia).not.toHaveBeenCalled();
+  });
+
+  it('old name still works', () => {
+    expect(ensureImageHeaderHandle).toBe(ensureMediaHeaderHandle);
+  });
+});
+

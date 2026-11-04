@@ -117,6 +117,22 @@ describe('resolveTemplateSendParams — named map', () => {
     });
   });
 
+  it('takes headerFilename as a structured key, not a variable', () => {
+    const t = row({ header_type: 'document' });
+    expect(
+      resolveTemplateSendParams(t, {
+        name: 'Ravi',
+        calendar_link: LINK,
+        headerMediaUrl: 'https://cdn/r.pdf',
+        headerFilename: ' Report.pdf ',
+      })
+    ).toEqual({
+      body: [LINK, 'Ravi'],
+      headerMediaUrl: 'https://cdn/r.pdf',
+      headerFilename: 'Report.pdf',
+    });
+  });
+
   it('treats a string "body" as a variable called body', () => {
     const t = row({ body_text: 'Note: {{body}}' });
     expect(resolveTemplateSendParams(t, { body: 'hello' })).toEqual({

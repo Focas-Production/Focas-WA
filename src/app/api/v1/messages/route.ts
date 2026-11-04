@@ -22,7 +22,7 @@
 //       "language": "en_US",
 //       "params": ["A123"]                   // positional body values, or
 //               | { "order_id": "A123" }     // named: keyed by template variable, or
-//               | { "body": [...] | {...}, "headerMediaUrl": "…", "buttonParams": { "0": "…" } }
+//               | { "body": [...] | {...}, "headerMediaUrl": "…", "headerFilename": "report.pdf", "buttonParams": { "0": "…" } }
 //     },
 //     "reply_to_message_id": "<uuid>",       // optional, must be in the same conversation
 //     "name": "Jane Doe"                     // optional, names a newly-created contact

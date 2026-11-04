@@ -19,7 +19,7 @@
  *          "buttonParams": { "0": "ORD-42" } }
  *
  * The structured keys (`headerText`, `headerMediaUrl`, `headerMediaId`,
- * `buttonParams`) are camelCase, which Meta never allows in a variable
+ * `headerFilename` (shown name of a DOCUMENT header), `buttonParams`) are camelCase, which Meta never allows in a variable
  * name, so they may also ride alongside a flat named map. `body` is
  * structured only when its value is an array or object — a string
  * `body` is a variable called "body".
@@ -44,6 +44,7 @@ const CAMEL_KEYS = [
   'headerText',
   'headerMediaUrl',
   'headerMediaId',
+  'headerFilename',
   'buttonParams',
 ] as const;
 
@@ -207,9 +208,11 @@ function resolveShape(
   const headerText = toOptionalText(structured.headerText, 'headerText');
   const headerMediaUrl = toOptionalText(structured.headerMediaUrl, 'headerMediaUrl');
   const headerMediaId = toOptionalText(structured.headerMediaId, 'headerMediaId');
+  const headerFilename = toOptionalText(structured.headerFilename, 'headerFilename');
   const buttonParams = parseButtonParams(structured.buttonParams);
   if (headerMediaUrl !== undefined) out.headerMediaUrl = headerMediaUrl;
   if (headerMediaId !== undefined) out.headerMediaId = headerMediaId;
+  if (headerFilename !== undefined && headerFilename.trim()) out.headerFilename = headerFilename.trim();
   if (buttonParams !== undefined) out.buttonParams = buttonParams;
 
   const rawBody = structured.body;

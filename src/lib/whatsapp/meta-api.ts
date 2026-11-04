@@ -658,6 +658,7 @@ export async function sendTemplateMessage(
       headerText: messageParams?.headerText,
       headerMediaUrl: messageParams?.headerMediaUrl,
       headerMediaId: messageParams?.headerMediaId,
+      headerFilename: messageParams?.headerFilename,
       buttonParams: messageParams?.buttonParams,
     })
     if (components.length > 0) {
