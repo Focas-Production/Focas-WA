@@ -10,7 +10,7 @@ import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import { fetchSocialProfile, type SocialChannelKind } from '@/lib/social/graph-api'
-import { rehostSocialMedia } from '@/lib/social/media'
+import { rehostSocialMedia, rehostSocialMediaDetailed } from '@/lib/social/media'
 import { SOCIAL_CHANNEL_LABEL } from '@/lib/social/send'
 
 // ============================================================
@@ -34,9 +34,37 @@ import { SOCIAL_CHANNEL_LABEL } from '@/lib/social/send'
 
 export const maxDuration = 60
 
+interface SocialTemplateButton {
+  type?: string
+  title?: string
+  url?: string
+  payload?: string
+}
+
+interface SocialTemplateElement {
+  title?: string
+  subtitle?: string
+  image_url?: string
+  buttons?: SocialTemplateButton[]
+}
+
 interface SocialAttachment {
   type: string
-  payload?: { url?: string; title?: string; sticker_id?: number }
+  payload?: {
+    url?: string
+    title?: string
+    sticker_id?: number
+    // `template` attachments (generic / button cards — e.g. ad welcome
+    // messages, lead-form confirmations, cards sent by other tools).
+    // Messenger puts these at the top level; Instagram nests them
+    // under `generic` / `product`.
+    template_type?: string
+    text?: string
+    elements?: SocialTemplateElement[]
+    buttons?: SocialTemplateButton[]
+    generic?: { elements?: SocialTemplateElement[] }
+    product?: { elements?: SocialTemplateElement[] }
+  }
 }
 
 interface SocialMessagingEvent {
@@ -375,6 +403,48 @@ async function parseAttachments(
       case 'location':
         parts.push({ contentType: 'location', contentText: att.payload?.title || 'Shared a location', mediaUrl: null })
         break
+      case 'template': {
+        // Generic / button cards. Flatten each card into readable text
+        // (title, subtitle, button labels) and keep its image if any.
+        const text = describeTemplate(att.payload)
+        const imageUrl = firstTemplateImage(att.payload)
+        const mediaUrl = imageUrl
+          ? await rehostSocialMedia(supabaseAdmin(), row.account_id, imageUrl, `${row.channel}-${mid.slice(-12)}-${i}`)
+          : null
+        parts.push({
+          contentType: mediaUrl ? 'image' : 'text',
+          contentText: text || (mediaUrl ? null : '[Card message]'),
+          mediaUrl,
+        })
+        break
+      }
+      case 'unsupported_type': {
+        // Instagram sends this for content its API won't describe
+        // (some reels/posts, carousels, private-account media). The URL
+        // usually still serves the media, so sniff its MIME type and
+        // render it as an image/video when we can.
+        if (!url) {
+          parts.push({ contentType: 'text', contentText: 'Sent content Instagram doesn\'t share with the API — check the Instagram app', mediaUrl: null })
+          break
+        }
+        const hosted = await rehostSocialMediaDetailed(
+          supabaseAdmin(), row.account_id, url, `${row.channel}-${mid.slice(-12)}-${i}`,
+        )
+        if (hosted.contentType?.startsWith('image/')) {
+          parts.push({ contentType: 'image', contentText: null, mediaUrl: hosted.url })
+        } else if (hosted.contentType?.startsWith('video/')) {
+          parts.push({ contentType: 'video', contentText: null, mediaUrl: hosted.url })
+        } else if (hosted.contentType?.startsWith('audio/')) {
+          parts.push({ contentType: 'audio', contentText: null, mediaUrl: hosted.url })
+        } else {
+          parts.push({
+            contentType: 'text',
+            contentText: `Shared content Instagram can't show here — open in the Instagram app: ${url}`,
+            mediaUrl: null,
+          })
+        }
+        break
+      }
       default:
         parts.push({
           contentType: 'text',
@@ -384,6 +454,35 @@ async function parseAttachments(
     }
   }
   return parts
+}
+
+function templateElements(payload: SocialAttachment['payload']): SocialTemplateElement[] {
+  if (!payload) return []
+  return payload.elements ?? payload.generic?.elements ?? payload.product?.elements ?? []
+}
+
+function firstTemplateImage(payload: SocialAttachment['payload']): string | null {
+  return templateElements(payload).find((e) => e.image_url)?.image_url ?? null
+}
+
+function describeButtons(buttons: SocialTemplateButton[] | undefined): string[] {
+  return (buttons ?? [])
+    .filter((b) => b.title)
+    .map((b) => (b.url ? `🔘 ${b.title} (${b.url})` : `🔘 ${b.title}`))
+}
+
+/** Plain-text rendering of a generic / button template card. */
+function describeTemplate(payload: SocialAttachment['payload']): string {
+  if (!payload) return ''
+  const blocks: string[] = []
+  if (payload.text) {
+    blocks.push([payload.text, ...describeButtons(payload.buttons)].join('\n'))
+  }
+  for (const el of templateElements(payload)) {
+    const lines = [el.title, el.subtitle, ...describeButtons(el.buttons)].filter(Boolean) as string[]
+    if (lines.length) blocks.push(lines.join('\n'))
+  }
+  return blocks.join('\n\n')
 }
 
 async function parseEventParts(

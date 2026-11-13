@@ -11,6 +11,30 @@ and polish.
 
 ## [Unreleased]
 
+### Storage & database cost savings
+
+> **Migration required:** apply `supabase/migrations/053_storage_retention.sql`,
+> then schedule a daily call to `GET /api/maintenance/cron` with the
+> `x-cron-secret` header (same `AUTOMATION_CRON_SECRET` as the other crons).
+
+- **Media retention:** chat media files older than 90 days
+  (`MEDIA_RETENTION_DAYS`) are deleted from the `chat-media` bucket;
+  the messages stay and show "media unavailable". Files used by
+  templates, broadcasts, flows, automations, quick replies, catalog
+  products or contact avatars are never deleted.
+- **Log pruning:** automation logs and finished flow-run events older
+  than 30 days (`LOG_RETENTION_DAYS`) and read notifications older than
+  60 days (`NOTIFICATION_RETENTION_DAYS`) are removed. Billing data,
+  messages, contacts and broadcast results are untouched.
+- **Instagram / Messenger media:** attachments over 5 MB
+  (`SOCIAL_MEDIA_MAX_MB`) are no longer copied into storage, photos and
+  avatars are resized and saved as WebP (typically 5–10× smaller), and
+  saved files are cached by browsers for a year to cut egress.
+- Instagram `template` cards (ad / lead-form replies) now show their
+  title, text and buttons instead of "[Unsupported attachment:
+  template]"; `unsupported_type` attachments are shown as an image or
+  video when the file allows it.
+
 ### Wallet usage report
 
 > **Migration required:** apply `supabase/migrations/045_wallet_usage.sql`
